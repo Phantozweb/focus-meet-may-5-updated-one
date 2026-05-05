@@ -268,9 +268,10 @@ function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
       setLoginError('Invalid Access ID. Please check and try again.');
       return;
     }
-    // Redirect to room with role flag
-    const roleParam = accessInfo.role.toLowerCase();
-    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&email=${encodeURIComponent(email.trim())}&role=${roleParam}&accessId=${encodeURIComponent(code)}`;
+    // Redirect to room with host flag for Host role, name param for all roles
+    const isHostRole = accessInfo.role === 'Host';
+    const nameFromEmail = email.trim().split('@')[0] || 'Host';
+    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&host=${isHostRole}&name=${encodeURIComponent(nameFromEmail)}&email=${encodeURIComponent(email.trim())}&role=${accessInfo.role.toLowerCase()}&accessId=${encodeURIComponent(code)}`;
   };
 
   const handleClose = () => {
@@ -445,6 +446,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
   const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, mins: 0, secs: 0 });
   const [devMode, setDevMode] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [devPanelOpen, setDevPanelOpen] = useState(false);
 
   // Detect dev mode and #join hash from URL
   useEffect(() => {
@@ -453,6 +455,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
       // Dev mode: #dev or hash contains dev=true
       if (hash === '#dev' || hash.includes('dev=true')) {
         setDevMode(true);
+        setDevPanelOpen(true);
       }
       // #join: auto-open the join modal
       if (hash === '#join' || hash.includes('join=true')) {
@@ -463,6 +466,20 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
     window.addEventListener('hashchange', checkHash);
     return () => window.removeEventListener('hashchange', checkHash);
   }, []);
+
+  // Dev mode: quick-enter room as host or viewer
+  const devEnterAsHost = () => {
+    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&host=true&name=${encodeURIComponent('Dev Host')}&email=dev-host%40test.focuslinks.in&waitingRoom=true`;
+  };
+  const devEnterAsViewer = () => {
+    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&name=${encodeURIComponent('Dev Viewer')}&email=dev-viewer%40test.focuslinks.in&waitingRoom=false`;
+  };
+  const devEnterAsSpeaker = () => {
+    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&host=true&name=${encodeURIComponent('Dev Speaker')}&email=dev-speaker%40test.focuslinks.in&role=speaker&accessId=SPK001&waitingRoom=true`;
+  };
+  const devEnterAsModerator = () => {
+    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&host=true&name=${encodeURIComponent('Dev Moderator')}&email=dev-mod%40test.focuslinks.in&role=moderator&accessId=MOD001&waitingRoom=true`;
+  };
 
   // Share link handler
   const handleShareLink = async () => {
@@ -803,6 +820,78 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
         </div>
       </section>
 
+      {/* ===== DEVELOPER MODE PANEL ===== */}
+      {devMode && devPanelOpen && (
+        <section className="relative z-10 px-4 sm:px-6 lg:px-8 py-6 bg-amber-500/5 border-y border-amber-500/20">
+          <div className="max-w-4xl mx-auto">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Flame className="w-5 h-5 text-amber-400" />
+                <h3 className="text-sm font-bold text-amber-300">Developer Mode</h3>
+                <span className="text-[9px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded">ACTIVE</span>
+              </div>
+              <button onClick={() => setDevPanelOpen(false)} className="text-zinc-500 hover:text-zinc-300 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[11px] text-zinc-500 mb-4">
+              Quick-enter the room with pre-filled data to test all features. Open this page with <code className="px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[10px]">#dev</code> in the URL to activate.
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <button
+                onClick={devEnterAsHost}
+                className="flex flex-col items-center gap-2 p-4 rounded-xl bg-emerald-600/10 border border-emerald-500/30 hover:bg-emerald-600/20 transition-colors"
+              >
+                <Video className="w-6 h-6 text-emerald-400" />
+                <span className="text-xs font-bold text-emerald-400">Host</span>
+                <span className="text-[9px] text-zinc-500">Full control + camera</span>
+              </button>
+              <button
+                onClick={devEnterAsSpeaker}
+                className="flex flex-col items-center gap-2 p-4 rounded-xl bg-blue-600/10 border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
+              >
+                <Monitor className="w-6 h-6 text-blue-400" />
+                <span className="text-xs font-bold text-blue-400">Speaker</span>
+                <span className="text-[9px] text-zinc-500">Present + camera</span>
+              </button>
+              <button
+                onClick={devEnterAsModerator}
+                className="flex flex-col items-center gap-2 p-4 rounded-xl bg-amber-600/10 border border-amber-500/30 hover:bg-amber-600/20 transition-colors"
+              >
+                <Shield className="w-6 h-6 text-amber-400" />
+                <span className="text-xs font-bold text-amber-400">Moderator</span>
+                <span className="text-[9px] text-zinc-500">Manage room</span>
+              </button>
+              <button
+                onClick={devEnterAsViewer}
+                className="flex flex-col items-center gap-2 p-4 rounded-xl bg-zinc-600/10 border border-zinc-500/30 hover:bg-zinc-600/20 transition-colors"
+              >
+                <Eye className="w-6 h-6 text-zinc-400" />
+                <span className="text-xs font-bold text-zinc-400">Viewer</span>
+                <span className="text-[9px] text-zinc-500">Watch & interact</span>
+              </button>
+            </div>
+            <div className="flex items-center gap-3 mt-4">
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10">
+                <span className="text-[10px] text-zinc-500">Room:</span>
+                <span className="text-xs font-mono font-bold text-zinc-300">{EVENT_ROOM_ID}</span>
+              </div>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10">
+                <span className="text-[10px] text-zinc-500">Token:</span>
+                <span className="text-xs font-mono font-bold text-zinc-300">{EVENT_ROOM_TOKEN}</span>
+              </div>
+              <button
+                onClick={handleShareLink}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-colors"
+              >
+                <Link2 className="w-3.5 h-3.5 text-blue-400" />
+                <span className="text-xs text-zinc-300">{linkCopied ? 'Copied!' : 'Copy Join Link'}</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* ===== FOOTER ===== */}
       <footer className="relative z-10 px-4 sm:px-6 lg:px-8 py-8 sm:py-10 bg-[#080808] border-t border-white/5 mt-auto">
         <div className="max-w-6xl mx-auto">
@@ -840,89 +929,22 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
 
       {/* Login Modal */}
       <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
+
+      {/* Dev Mode Floating Re-open Button */}
+      {devMode && !devPanelOpen && (
+        <button
+          onClick={() => setDevPanelOpen(true)}
+          className="fixed bottom-4 right-4 z-50 flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 shadow-lg shadow-amber-500/10 hover:bg-amber-500/20 transition-colors"
+        >
+          <Flame className="w-4 h-4 text-amber-400" />
+          <span className="text-[10px] font-bold text-amber-400">DEV</span>
+        </button>
+      )}
     </div>
   );
 }
 
 // ============ SUB-COMPONENTS ============
-
-function EventCard({
-  title,
-  speaker,
-  speakerRole,
-  speakerInitials,
-  date,
-  time,
-  isLive,
-}: {
-  title: string;
-  speaker: string;
-  speakerRole: string;
-  speakerInitials: string;
-  date: string;
-  time: string;
-  isLive?: boolean;
-}) {
-  return (
-    <Card className="bg-white/[0.03] border-white/10 hover:border-blue-500/20 transition-all group">
-      <CardContent className="p-4 sm:p-5">
-        {/* Live badge */}
-        {isLive && (
-          <div className="flex items-center gap-1.5 mb-3">
-            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-[9px] font-bold text-emerald-400 uppercase">Next Up</span>
-            </div>
-          </div>
-        )}
-
-        <h4 className="text-sm sm:text-base font-bold text-zinc-200 mb-3 group-hover:text-blue-300 transition-colors leading-snug">
-          {title}
-        </h4>
-
-        {/* Speaker info */}
-        <div className="flex items-center gap-2.5 mb-3">
-          <div className="w-8 h-8 rounded-full bg-blue-600/20 border border-blue-500/30 flex items-center justify-center flex-shrink-0">
-            <span className="text-[10px] font-bold text-blue-400">{speakerInitials}</span>
-          </div>
-          <div className="min-w-0">
-            <p className="text-xs font-semibold text-zinc-300 truncate">{speaker}</p>
-            <p className="text-[9px] text-zinc-500 truncate">{speakerRole}</p>
-          </div>
-        </div>
-
-        {/* Date & time */}
-        <div className="flex items-center gap-2 mb-4">
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white/5 border border-white/10">
-            <Calendar className="w-3 h-3 text-blue-400" />
-            <span className="text-[10px] font-medium text-zinc-400">{date}</span>
-          </div>
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white/5 border border-white/10">
-            <Clock className="w-3 h-3 text-blue-400" />
-            <span className="text-[10px] font-medium text-zinc-400">{time}</span>
-          </div>
-        </div>
-
-        {/* Action buttons */}
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold h-8"
-          >
-            Join
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="flex-1 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 text-[11px] font-semibold h-8"
-          >
-            Sign In
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 function EngagementMetric({ icon, label, points, detail }: { icon: React.ReactNode; label: string; points: string; detail?: string }) {
   return (

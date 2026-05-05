@@ -255,7 +255,7 @@ export class FractalMeshEngine {
   // PRIMARY: Use PeerJS cloud server (0.peerjs.com) as default
   private getPeerConfig() {
     return {
-      debug: 1,
+      debug: 0, // Suppress noisy PeerJS console logs
       config: { iceServers: ICE_SERVERS },
       host: '0.peerjs.com',
       port: 443,
@@ -264,12 +264,12 @@ export class FractalMeshEngine {
     };
   }
 
-  // FALLBACK: Same PeerJS cloud server with slight variation for retry
+  // FALLBACK: Alternate PeerJS cloud server for retry
   private getPeerConfigFallback() {
     return {
-      debug: 1,
+      debug: 0,
       config: { iceServers: ICE_SERVERS },
-      host: '0.peerjs.com',
+      host: '1.peerjs.com',
       port: 443,
       path: '/',
       secure: true,
@@ -493,7 +493,10 @@ export class FractalMeshEngine {
       const hostConn = this.peer!.connect(hostPeerId, { reliable: true, serialization: 'json' });
 
       const timeout = setTimeout(() => {
-        if (!hostConn.open) reject(new Error('Host unreachable. Check room ID.'));
+        if (!hostConn.open) {
+          try { hostConn.close(); } catch {}
+          reject(new Error('Host is not online yet. The host needs to start the room first before viewers can join.'));
+        }
       }, PEER_CONNECT_TIMEOUT);
 
       hostConn.on('open', () => {

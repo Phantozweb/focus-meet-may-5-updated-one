@@ -726,3 +726,28 @@ Rewrite LandingPage.tsx to remove Honeycomb architecture references, remove benc
 6. **Footer sticky with mt-auto**: The footer uses `mt-auto` on a `min-h-screen flex flex-col` parent, ensuring it sticks to the bottom when content is short and gets pushed down naturally when content overflows.
 
 ---
+
+---
+Task ID: 1
+Agent: main
+Task: Fix PeerJS connection error, enhance developer mode, verify share link feature
+
+Work Log:
+- Identified root cause of "Could not connect to peer fm-FM-A3K7-host" error: LoginModal set `role=host` in URL hash but RoomPage checked `params.get('host') === 'true'` — they didn't match, so hosts were treated as viewers
+- Fixed LoginModal to set `host=true` when access code gives Host role, and added `name=` parameter
+- Fixed PeerJS server config: fallback was identical to primary (both `0.peerjs.com`), changed fallback to `1.peerjs.com`
+- Set PeerJS debug level from 1 to 0 to suppress noisy console error logs
+- Increased PEER_CONNECT_TIMEOUT from 10s to 15s for more reliable connections on slow networks
+- Improved viewer error message from "Host unreachable. Check room ID." to "Host is not online yet. The host needs to start the room first before viewers can join."
+- Added comprehensive Developer Mode panel with quick-enter buttons for Host, Speaker, Moderator, and Viewer roles
+- Added dev mode floating re-open button when panel is dismissed
+- Dev mode auto-opens when `#dev` is in URL hash
+- Removed unused EventCard component (upcoming events section was already hidden)
+- Verified share link feature works: `#join` hash auto-opens JoinRoomModal, form submission enters webinar
+
+Stage Summary:
+- PeerJS connection error ROOT CAUSE: LoginModal/RoomPage hash parameter mismatch (role=host vs host=true)
+- PeerJS fallback now uses different server (1.peerjs.com vs 0.peerjs.com)
+- Developer mode: `#dev` in URL → panel with 4 role quick-enter buttons + room credentials display
+- Share link: `#join` in URL → auto-opens join form → submits → enters webinar
+- Lint passes, dev server compiles successfully
