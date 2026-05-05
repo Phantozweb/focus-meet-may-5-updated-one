@@ -238,10 +238,23 @@ function PointsBadge({ icon, label, points }: { icon: React.ReactNode; label: st
 
 // ============ LOGIN MODAL ============
 
-function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function LoginModal({ open, onClose, prefilledEmail, prefilledAccessId }: { open: boolean; onClose: () => void; prefilledEmail?: string; prefilledAccessId?: string }) {
   const [email, setEmail] = useState('');
   const [accessId, setAccessId] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [prevPrefillEmail, setPrevPrefillEmail] = useState('');
+  const [prevPrefillAccessId, setPrevPrefillAccessId] = useState('');
+
+  // Sync pre-filled values when they change (dev mode role switching)
+  // Using state comparison instead of useEffect to avoid lint violation
+  if (prefilledEmail && prefilledEmail !== prevPrefillEmail) {
+    setEmail(prefilledEmail);
+    setPrevPrefillEmail(prefilledEmail);
+  }
+  if (prefilledAccessId && prefilledAccessId !== prevPrefillAccessId) {
+    setAccessId(prefilledAccessId);
+    setPrevPrefillAccessId(prefilledAccessId);
+  }
 
   // Detect role as user types access ID — derived, no effect needed
   const detectedRole = useMemo(() => {
@@ -427,7 +440,7 @@ function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
               disabled={!email.trim() || accessId.trim().length !== 6}
               className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-12"
             >
-              Sign In <ArrowRight className="w-4 h-4 ml-2" />
+              Sign In as {detectedRole?.role || 'Host'} <ArrowRight className="w-4 h-4 ml-2" />
             </Button>
           </div>
         </motion.div>
@@ -447,6 +460,8 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
   const [devMode, setDevMode] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const [devPanelOpen, setDevPanelOpen] = useState(false);
+  const [devPrefilledEmail, setDevPrefilledEmail] = useState('');
+  const [devPrefilledAccessId, setDevPrefilledAccessId] = useState('');
 
   // Detect dev mode and #join hash from URL
   useEffect(() => {
@@ -467,18 +482,24 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
     return () => window.removeEventListener('hashchange', checkHash);
   }, []);
 
-  // Dev mode: quick-enter room as host or viewer
+  // Dev mode: open LoginModal with pre-filled credentials for sign-in flow
   const devEnterAsHost = () => {
-    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&host=true&name=${encodeURIComponent('Dev Host')}&email=dev-host%40test.focuslinks.in&waitingRoom=true`;
-  };
-  const devEnterAsViewer = () => {
-    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&name=${encodeURIComponent('Dev Viewer')}&email=dev-viewer%40test.focuslinks.in&waitingRoom=false`;
+    setDevPrefilledEmail('dev-host@test.focuslinks.in');
+    setDevPrefilledAccessId('X9M2PK');
+    setLoginModalOpen(true);
   };
   const devEnterAsSpeaker = () => {
-    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&host=true&name=${encodeURIComponent('Dev Speaker')}&email=dev-speaker%40test.focuslinks.in&role=speaker&accessId=SPK001&waitingRoom=true`;
+    setDevPrefilledEmail('dev-speaker@test.focuslinks.in');
+    setDevPrefilledAccessId('SPK001');
+    setLoginModalOpen(true);
   };
   const devEnterAsModerator = () => {
-    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&host=true&name=${encodeURIComponent('Dev Moderator')}&email=dev-mod%40test.focuslinks.in&role=moderator&accessId=MOD001&waitingRoom=true`;
+    setDevPrefilledEmail('dev-mod@test.focuslinks.in');
+    setDevPrefilledAccessId('MOD001');
+    setLoginModalOpen(true);
+  };
+  const devEnterAsViewer = () => {
+    setJoinModalOpen(true);
   };
 
   // Share link handler
@@ -835,7 +856,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               </button>
             </div>
             <p className="text-[11px] text-zinc-500 mb-4">
-              Quick-enter the room with pre-filled data to test all features. Open this page with <code className="px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[10px]">#dev</code> in the URL to activate.
+              Quick-sign-in with pre-filled credentials to test all features. Open this page with <code className="px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[10px]">#dev</code> in the URL to activate.
             </p>
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-4">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
@@ -848,7 +869,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               >
                 <Video className="w-6 h-6 text-emerald-400" />
                 <span className="text-xs font-bold text-emerald-400">Host</span>
-                <span className="text-[9px] text-zinc-500">Full control + camera</span>
+                <span className="text-[9px] text-zinc-500">Sign in & start room</span>
               </button>
               <button
                 onClick={devEnterAsSpeaker}
@@ -856,7 +877,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               >
                 <Monitor className="w-6 h-6 text-blue-400" />
                 <span className="text-xs font-bold text-blue-400">Speaker</span>
-                <span className="text-[9px] text-zinc-500">Present + camera</span>
+                <span className="text-[9px] text-zinc-500">Sign in to present</span>
               </button>
               <button
                 onClick={devEnterAsModerator}
@@ -864,7 +885,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               >
                 <Shield className="w-6 h-6 text-amber-400" />
                 <span className="text-xs font-bold text-amber-400">Moderator</span>
-                <span className="text-[9px] text-zinc-500">Manage room</span>
+                <span className="text-[9px] text-zinc-500">Sign in to manage</span>
               </button>
               <button
                 onClick={devEnterAsViewer}
@@ -932,7 +953,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
       <JoinRoomModal key={joinModalOpen ? 'open' : 'closed'} open={joinModalOpen} onClose={() => setJoinModalOpen(false)} onSwitchToLogin={() => setLoginModalOpen(true)} devMode={devMode} />
 
       {/* Login Modal */}
-      <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
+      <LoginModal open={loginModalOpen} onClose={() => { setLoginModalOpen(false); setDevPrefilledEmail(''); setDevPrefilledAccessId(''); }} prefilledEmail={devPrefilledEmail} prefilledAccessId={devPrefilledAccessId} />
 
       {/* Dev Mode Floating Re-open Button */}
       {devMode && !devPanelOpen && (

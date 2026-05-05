@@ -778,3 +778,32 @@ Stage Summary:
 - Now both host and viewer use the same room ID (FM-A3K7) for peer discovery
 - Connection error screen with retry/back buttons instead of silent failure
 - Better retry logic and error messages throughout PeerJS connection flow
+
+---
+Task ID: 7
+Agent: main
+Task: Fix PeerJS connection failure, make dev mode sign in properly, ensure meetings can start
+
+Work Log:
+- Analyzed the full connection flow: LandingPage → LoginModal → RoomPage → FractalMeshEngine.createRoom/joinRoom → PeerJS
+- Fixed critical bug: PeerJS fallback comparison `config === this.getPeerConfig()` was ALWAYS false (object identity check on new objects each time), meaning the fallback server was never tried
+- Rewrote createRoom() and joinRoom() to use `isPrimary: boolean` parameter instead of comparing object references
+- Added console.log messages for peer connection success/failure for debugging
+- Updated PeerJS config: primary = `0.peerjs.com` (public cloud), fallback = `1.peerjs.com` (alternate cloud) — most compatible through firewalls
+- Attempted to use local PeerJS server (port 9001) but Caddy gateway not routing `/focusmeet*` path correctly (Caddy running with different config file)
+- Updated developer mode to go through LoginModal sign-in flow instead of directly setting URL hash:
+  - Dev Host button → opens LoginModal with email=dev-host@test.focuslinks.in, accessId=X9M2PK
+  - Dev Speaker button → opens LoginModal with email=dev-speaker@test.focuslinks.in, accessId=SPK001
+  - Dev Moderator button → opens LoginModal with email=dev-mod@test.focuslinks.in, accessId=MOD001
+  - Dev Viewer button → opens JoinRoomModal
+- Updated LoginModal to accept prefilledEmail and prefilledAccessId props for dev mode
+- Used React state comparison pattern (instead of useEffect) to sync pre-filled values to avoid lint error
+- Updated Sign In button text to show detected role: "Sign In as Host"
+- Updated dev panel button labels: "Sign in & start room", "Sign in to present", "Sign in to manage"
+- Started local PeerJS server on port 9001 (available but not accessible through gateway)
+
+Stage Summary:
+- Critical PeerJS fallback bug FIXED — fallback server is now actually used when primary fails
+- Developer mode now uses proper sign-in flow through LoginModal
+- PeerJS uses public cloud servers (0.peerjs.com primary, 1.peerjs.com fallback) for maximum compatibility
+- Lint passes, app compiles successfully
