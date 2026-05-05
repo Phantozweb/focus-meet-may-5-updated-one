@@ -28,7 +28,7 @@ import { toast } from 'sonner';
 import {
   Clock, WifiOff, AlertTriangle, Users, Shield, Copy, Check,
   Sun, Moon, ArrowLeft, Menu, X, ChevronDown, Monitor,
-  ChevronRight, UserCheck,
+  ChevronRight, UserCheck, MessageCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -84,7 +84,8 @@ export function RoomPage() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionStep, setConnectionStep] = useState<string>('Initializing...');
   const [floatingReactions, setFloatingReactions] = useState<{ id: string; type: ReactionType; x: number }[]>([]);
-  const [isWaitingRoomPanelOpen, setIsWaitingRoomPanelOpen] = useState(false);
+  const [isWaitingRoomPanelOpen, setIsWaitingRoomPanelOpen] = useState(true);
+  const [hostPanelTab, setHostPanelTab] = useState<'waiting' | 'participants' | 'chat' | 'health'>('waiting');
 
   // Keep refs in sync with state (must be in useEffect to avoid render-time ref access)
   useEffect(() => {
@@ -157,6 +158,7 @@ export function RoomPage() {
       const tokenParam = params.get('token');
       const host = params.get('host') === 'true';
       const name = params.get('name') || 'Anonymous';
+      const roleParam = params.get('role') || 'viewer'; // host, speaker, moderator, viewer
       const waitingRoomParam = params.get('waitingRoom') !== 'false'; // default true
       const hostPeerIdParam = params.get('hostPeer'); // actual host peer ID from URL
       setDisplayName(name);
@@ -333,7 +335,7 @@ export function RoomPage() {
         } else {
           // VIEWER FLOW: join room → waiting room (if needed) → viewer experience
           setConnectionStep('Connecting to signaling server...');
-          const info = await eng.joinRoom(normalizedId, name, hostPeerIdParam || undefined);
+          const info = await eng.joinRoom(normalizedId, name, hostPeerIdParam || undefined, roleParam);
           setRoomInfo(info); setIsHost(false);
 
           // Check if we're in the waiting room (engine sets this from isWaiting flag in room-info)
@@ -525,19 +527,17 @@ export function RoomPage() {
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-            {/* Waiting room toggle */}
+            {/* Waiting room indicator — clicking switches to Waiting tab */}
             {waitingRoom.length > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
-                className={`h-6 px-1.5 text-[9px] sm:text-[10px] gap-0.5 ${
-                  isWaitingRoomPanelOpen ? 'text-amber-400 bg-amber-500/10' : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-                onClick={() => setIsWaitingRoomPanelOpen(!isWaitingRoomPanelOpen)}
+                className="h-6 px-1.5 text-[9px] sm:text-[10px] gap-0.5 text-amber-400 bg-amber-500/10 hover:bg-amber-500/20"
+                onClick={() => setHostPanelTab('waiting')}
               >
                 <Users className="w-3 h-3" />
                 <span className="hidden sm:inline">Waiting</span>
-                <Badge className="h-4 px-1 text-[8px] bg-amber-500/20 text-amber-400 border-0 ml-0.5">
+                <Badge className="h-4 px-1 text-[8px] bg-amber-500/20 text-amber-400 border-0 ml-0.5 animate-pulse">
                   {waitingRoom.length}
                 </Badge>
               </Button>
@@ -623,22 +623,45 @@ export function RoomPage() {
             )}
           </div>
 
-          {/* Right side panel: TreeHealth + WaitingRoom + Chat + Participants + Files */}
-          <div className="hidden sm:flex flex-col w-80 border-l border-zinc-800 bg-zinc-900/50 flex-shrink-0 overflow-y-auto custom-scrollbar">
-            {/* Tree Health Dashboard — always visible for hosts */}
-            <div className="border-b border-zinc-800">
-              <TreeHealthDashboard />
+          {/* Right side panel: Admin panel with tabs */}
+          <div className="hidden sm:flex flex-col w-80 border-l border-zinc-800 bg-zinc-900/50 flex-shrink-0 overflow-hidden">
+            {/* Tab bar */}
+            <div className="flex border-b border-zinc-800 flex-shrink-0">
+              <HostTabButton
+                label="Waiting"
+                icon={<Users className="w-3.5 h-3.5" />}
+                active={hostPanelTab === 'waiting'}
+                badge={waitingRoom.length > 0 ? waitingRoom.length : undefined}
+                badgeClass="bg-amber-500/20 text-amber-400"
+                onClick={() => setHostPanelTab('waiting')}
+              />
+              <HostTabButton
+                label="People"
+                icon={<Users className="w-3.5 h-3.5" />}
+                active={hostPanelTab === 'participants'}
+                badge={nodes.size > 1 ? nodes.size - 1 : undefined}
+                onClick={() => setHostPanelTab('participants')}
+              />
+              <HostTabButton
+                label="Chat"
+                icon={<MessageCircle className="w-3.5 h-3.5" />}
+                active={hostPanelTab === 'chat'}
+                onClick={() => setHostPanelTab('chat')}
+              />
+              <HostTabButton
+                label="Health"
+                icon={<Shield className="w-3.5 h-3.5" />}
+                active={hostPanelTab === 'health'}
+                onClick={() => setHostPanelTab('health')}
+              />
             </div>
-            {/* Waiting Room Panel (collapsible) */}
-            {isWaitingRoomPanelOpen && (
-              <div className="border-b border-zinc-800 max-h-64 overflow-y-auto">
-                <WaitingRoom />
-              </div>
-            )}
-            {/* Other panels */}
-            {isParticipantsOpen && <ParticipantList />}
-            {isChatOpen && <ChatPanel />}
-            {isFilesOpen && <FileSharingPanel />}
+            {/* Tab content */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              {hostPanelTab === 'waiting' && <WaitingRoom />}
+              {hostPanelTab === 'participants' && <ParticipantList />}
+              {hostPanelTab === 'chat' && <ChatPanel standalone />}
+              {hostPanelTab === 'health' && <TreeHealthDashboard />}
+            </div>
           </div>
         </div>
 
@@ -890,5 +913,40 @@ export function RoomPage() {
         </AnimatePresence>
       </div>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Host Admin Panel Tab Button
+// ─────────────────────────────────────────────────────────────
+
+function HostTabButton({
+  label, icon, active, badge, badgeClass, onClick,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  badge?: number;
+  badgeClass?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 flex items-center justify-center gap-1 py-2 text-[10px] font-semibold transition-colors relative
+        ${active
+          ? 'text-zinc-100 border-b-2 border-blue-500'
+          : 'text-zinc-500 hover:text-zinc-300 border-b-2 border-transparent'
+        }`}
+    >
+      {icon}
+      <span className="hidden lg:inline">{label}</span>
+      {badge !== undefined && badge > 0 && (
+        <span className={`inline-flex items-center justify-center min-w-[14px] h-[14px] px-0.5 rounded-full text-[8px] font-bold
+          ${badgeClass || 'bg-zinc-700 text-zinc-300'}`}>
+          {badge}
+        </span>
+      )}
+    </button>
   );
 }

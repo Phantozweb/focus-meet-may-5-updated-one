@@ -74,6 +74,8 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
     if (engine) {
       const enabled = engine.toggleAudio();
       setAudioEnabled(enabled);
+      // Broadcast media state to other participants
+      engine.sendMediaStateUpdate(enabled, videoEnabled);
     }
   };
 
@@ -81,6 +83,8 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
     if (engine) {
       const enabled = engine.toggleVideo();
       setVideoEnabled(enabled);
+      // Broadcast media state to other participants
+      engine.sendMediaStateUpdate(audioEnabled, enabled);
     }
   };
 
@@ -142,6 +146,11 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
   };
 
   const handleReaction = (type: ReactionType) => {
+    // Send reaction via P2P to other participants
+    if (engine) {
+      engine.sendReaction(type);
+    }
+    // Also add locally for immediate feedback
     addReaction({
       id: `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       type,

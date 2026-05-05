@@ -22,7 +22,7 @@ export function WaitingRoom() {
 
   const [autoAdmit, setAutoAdmit] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
   const prevCountRef = useRef(0);
   const prevNotifCountRef = useRef(0);
 

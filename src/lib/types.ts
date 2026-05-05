@@ -251,6 +251,7 @@ export type SignalMessageType =
   | 'annotation-update'
   | 'co-host-assign'
   | 'co-host-revoke'
+  | 'media-state-update'
   | 'content-chunk';
 
 export interface SignalMessage {

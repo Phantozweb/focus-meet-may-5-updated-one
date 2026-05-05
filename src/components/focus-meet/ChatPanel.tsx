@@ -11,7 +11,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 
 const QUICK_EMOJIS = ['👍', '👏', '❤️', '😂', '🔥', '👋', '🎉', '💯', '🤔', '👀', '✅', '🙏'];
 
-export function ChatPanel() {
+export function ChatPanel({ standalone = false }: { standalone?: boolean }) {
   const { chatMessages, isChatOpen, setChatOpen, engine, myNode, nodes } = useRoomStore();
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -41,12 +41,12 @@ export function ChatPanel() {
     setShowEmoji(false);
   };
 
-  if (!isChatOpen) return null;
+  if (!standalone && !isChatOpen) return null;
 
   const participantCount = nodes.size;
 
   return (
-    <div className="w-full sm:w-80 border-l border-zinc-800 bg-zinc-950 flex flex-col h-full">
+    <div className={`w-full flex flex-col h-full ${standalone ? '' : 'sm:w-80 border-l border-zinc-800'} bg-zinc-950`}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
         <div className="flex items-center gap-2">

@@ -141,6 +141,10 @@ export class FractalMeshEngine {
   private bandwidthProbes: Map<string, BandwidthProbe> = new Map();
   private PeerJS: any = null;
 
+  // Join room promise resolution (CRITICAL: must be called when room-info is received)
+  private joinRoomResolve: ((info: RoomInfo) => void) | null = null;
+  private joinRoomReject: ((err: any) => void) | null = null;
+
   // Churn tracking for 700-user stability
   private recentJoins: number[] = [];          // Timestamps of recent joins
   private recentLeaves: number[] = [];         // Timestamps of recent leaves
@@ -456,7 +460,7 @@ export class FractalMeshEngine {
 
   // ============ VIEWER: JOIN ROOM ============
 
-  async joinRoom(roomId: string, displayName: string, hostPeerId?: string): Promise<RoomInfo> {
+  async joinRoom(roomId: string, displayName: string, hostPeerId?: string, role?: string): Promise<RoomInfo> {
     await this.ensurePeerJS();
     const peerId = `fm-${roomId}-${this.generatePeerSuffix()}`;
 
@@ -484,7 +488,7 @@ export class FractalMeshEngine {
         p.on('open', (id: string) => {
           clearTimeout(timeout);
           console.log(`[FractalMesh] Viewer peer opened: ${id} (server: ${isPrimary ? '0.peerjs.com' : '1.peerjs.com'})`);
-          this.initViewer(id, displayName, roomId, hostPeerId, resolve, reject);
+          this.initViewer(id, displayName, roomId, hostPeerId, role, resolve, reject);
         });
 
         p.on('error', (err: any) => {
@@ -513,9 +517,13 @@ export class FractalMeshEngine {
 
   private initViewer(
     peerId: string, displayName: string, roomId: string,
-    hostPeerId: string | undefined,
+    hostPeerId: string | undefined, role: string | undefined,
     resolve: (v: RoomInfo) => void, reject: (e: any) => void
   ) {
+    // Store resolve/reject so we can call them when room-info arrives
+    this.joinRoomResolve = resolve;
+    this.joinRoomReject = reject;
+
     this.myNode = this.createNode(peerId, displayName, 'viewer', 'leaf', null, -1, '');
     this.myNode.maxRelayCapacity = getMaxChildrenForDevice(this.myDevice);
     this.nodes.set(peerId, this.myNode);
@@ -529,7 +537,8 @@ export class FractalMeshEngine {
       const timeout = setTimeout(() => {
         if (!hostConn.open) {
           try { hostConn.close(); } catch {}
-          reject(new Error('Host is not online yet. The host needs to start the room first before viewers can join.'));
+          const err = new Error('Host is not online yet. The host needs to start the room first before viewers can join.');
+          if (this.joinRoomReject) { this.joinRoomReject(err); this.joinRoomResolve = null; this.joinRoomReject = null; }
         }
       }, PEER_CONNECT_TIMEOUT);
 
@@ -544,6 +553,7 @@ export class FractalMeshEngine {
             peerId,
             device: this.myDevice,
             maxRelayCapacity: this.myNode!.maxRelayCapacity,
+            role: role || 'viewer',
           },
           senderId: peerId,
           senderName: displayName,
@@ -557,9 +567,11 @@ export class FractalMeshEngine {
 
       hostConn.on('error', (err: any) => {
         clearTimeout(timeout);
-        reject(err);
+        if (this.joinRoomReject) { this.joinRoomReject(err); this.joinRoomResolve = null; this.joinRoomReject = null; }
       });
-    } catch (e) { reject(e); }
+    } catch (e) {
+      if (this.joinRoomReject) { this.joinRoomReject(e); this.joinRoomResolve = null; this.joinRoomReject = null; }
+    }
 
     this.peer!.on('connection', (c: DataConnection) => this.handleIncomingChildConn(c));
     this.peer!.on('call', (c: MediaConnection) => this.handleIncomingCall(c));
@@ -941,8 +953,17 @@ export class FractalMeshEngine {
       if (msg.type === 'room-info') {
         this.roomInfo = this.deserializeRoomInfo(msg.payload);
         if (this.myNode) this.myNode.status = 'connected';
+        if (msg.payload.isWaiting) {
+          this.isInWaitingRoomState = true;
+        }
         if (this.onConnectionStatus) this.onConnectionStatus('connected');
         this.saveToStorage();
+        // CRITICAL: Resolve the joinRoom() promise now that we have room info
+        if (this.joinRoomResolve) {
+          this.joinRoomResolve(this.roomInfo);
+          this.joinRoomResolve = null;
+          this.joinRoomReject = null;
+        }
         return;
       }
       return;
@@ -961,6 +982,12 @@ export class FractalMeshEngine {
           if (this.onConnectionStatus) this.onConnectionStatus('connected');
         }
         this.saveToStorage();
+        // Resolve joinRoom promise if still pending
+        if (this.joinRoomResolve) {
+          this.joinRoomResolve(this.roomInfo);
+          this.joinRoomResolve = null;
+          this.joinRoomReject = null;
+        }
         break;
       case 'parent-assigned': this.handleParentAssigned(msg); break;
       case 'assign-parent': this.handleAssignParent(msg); break;
@@ -1019,6 +1046,7 @@ export class FractalMeshEngine {
       case 'waiting-admit': this.handleWaitingAdmit(msg); break;
       case 'waiting-deny': this.handleWaitingDeny(msg); break;
       case 'moderation-action': this.handleModerationAction(msg); break;
+      case 'media-state-update': this.handleMediaStateUpdate(msg); break;
       case 'room-lock': this.handleRoomLock(msg); break;
       case 'room-unlock': this.handleRoomUnlock(msg); break;
       case 'stream-relay': this.handleStreamRelay(msg); break;
@@ -1055,38 +1083,43 @@ export class FractalMeshEngine {
 
     // Check if waiting room is enabled
     if (this.waitingRoomEnabled) {
-      const { displayName, peerId } = msg.payload;
-      // Add to waiting list instead of processing immediately
-      this.waitingList.push({
-        peerId,
-        displayName,
-        conn,
-        joinPayload: msg.payload,
-      });
-      // Notify the viewer they're in the waiting room
-      this.sendSignal(conn, {
-        type: 'waiting-join',
-        payload: { peerId, displayName, status: 'waiting' },
-        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
-        roomId: this.roomInfo.roomId, timestamp: Date.now(),
-      });
-      // ALSO send room-info so the viewer can display the waiting screen
-      // with room title and host name, but mark it as waiting state
-      const roomInfoCopy = { ...this.roomInfo! };
-      if (roomInfoCopy.clusters instanceof Map) {
-        roomInfoCopy.clusters = Object.fromEntries(roomInfoCopy.clusters) as any;
+      const { displayName, peerId, role } = msg.payload;
+      // Speakers and moderators bypass the waiting room
+      const bypassWaitingRoom = role === 'speaker' || role === 'moderator';
+      if (!bypassWaitingRoom) {
+        // Add to waiting list instead of processing immediately
+        this.waitingList.push({
+          peerId,
+          displayName,
+          conn,
+          joinPayload: msg.payload,
+        });
+        // Notify the viewer they're in the waiting room
+        this.sendSignal(conn, {
+          type: 'waiting-join',
+          payload: { peerId, displayName, status: 'waiting' },
+          senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+          roomId: this.roomInfo.roomId, timestamp: Date.now(),
+        });
+        // ALSO send room-info so the viewer can display the waiting screen
+        // with room title and host name, but mark it as waiting state
+        const roomInfoCopy = { ...this.roomInfo! };
+        if (roomInfoCopy.clusters instanceof Map) {
+          roomInfoCopy.clusters = Object.fromEntries(roomInfoCopy.clusters) as any;
+        }
+        this.sendSignal(conn, {
+          type: 'room-info',
+          payload: { ...roomInfoCopy, isWaiting: true },
+          senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+          roomId: this.roomInfo.roomId, timestamp: Date.now(),
+        });
+        // Notify UI
+        if (this.onWaitingRoomUpdate) {
+          this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName, device: w.joinPayload?.device || null })));
+        }
+        return;
       }
-      this.sendSignal(conn, {
-        type: 'room-info',
-        payload: { ...roomInfoCopy, isWaiting: true },
-        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
-        roomId: this.roomInfo.roomId, timestamp: Date.now(),
-      });
-      // Notify UI
-      if (this.onWaitingRoomUpdate) {
-        this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName, device: w.joinPayload?.device || null })));
-      }
-      return;
+      // Speaker/moderator bypasses — fall through to processJoinRoom
     }
 
     this.processJoinRoom(conn, msg.payload);
@@ -1121,7 +1154,7 @@ export class FractalMeshEngine {
       return;
     }
 
-    const { displayName, peerId, device, maxRelayCapacity } = payload;
+    const { displayName, peerId, device, maxRelayCapacity, role } = payload;
 
     // NEW: If we have root nodes, assign to the least-loaded root, NOT the host.
     // This is critical for scaling — roots receive the stream directly from the host
@@ -1159,8 +1192,10 @@ export class FractalMeshEngine {
 
     const canRelay = (maxRelayCapacity || 3) >= 3;
     const clusterRole: ClusterRole = canRelay ? 'relay' : 'leaf';
+    // Map join role to UserRole: speaker/moderator get 'speaker' role, others get 'viewer'
+    const userRole: UserRole = (role === 'speaker' || role === 'moderator') ? 'speaker' : 'viewer';
 
-    const newNode = this.createNode(peerId, displayName, 'viewer', clusterRole, parentNode.peerId, depth, clusterId);
+    const newNode = this.createNode(peerId, displayName, userRole, clusterRole, parentNode.peerId, depth, clusterId);
     if (device) {
       newNode.device = device;
       newNode.maxRelayCapacity = maxRelayCapacity || getMaxChildrenForDevice(device);
@@ -3472,11 +3507,19 @@ export class FractalMeshEngine {
     const joinPayload = waitingEntry.joinPayload;
 
     if (conn && conn.open) {
-      // Process the join — this adds the viewer as a child
-      this.processJoinRoom(conn, joinPayload);
+      // Send admit signal DIRECTLY to the admitted viewer BEFORE processing the join,
+      // because processJoinRoom may reassign to a relay and close this connection
+      this.sendSignal(conn, {
+        type: 'waiting-admit',
+        payload: { peerId },
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
 
-      // Send admit signal DIRECTLY to the admitted viewer (critical — use reliable channel)
-      this.sendReliableCritical('waiting-admit', { peerId });
+      // Process the join — this adds the viewer as a child and sends room-info + parent-assigned
+      this.processJoinRoom(conn, joinPayload);
     }
 
     if (this.onWaitingRoomUpdate) {
@@ -3490,9 +3533,16 @@ export class FractalMeshEngine {
     const waitingEntry = this.waitingList.find(w => w.peerId === peerId);
     this.waitingList = this.waitingList.filter(w => w.peerId !== peerId);
 
-    // Send deny signal directly to the denied viewer (critical — use reliable channel)
+    // Send deny signal directly to the denied viewer through their connection
     if (waitingEntry?.conn && waitingEntry.conn.open) {
-      this.sendReliableCritical('waiting-deny', { peerId });
+      this.sendSignal(waitingEntry.conn, {
+        type: 'waiting-deny',
+        payload: { peerId },
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
       // Close the connection after denying
       try { waitingEntry.conn.close(); } catch {}
     }
@@ -3660,6 +3710,42 @@ export class FractalMeshEngine {
     if (this.parentConnection) this.sendSignal(this.parentConnection, msg);
 
     if (this.onReaction) this.onReaction(reaction);
+  }
+
+  // ============ PUBLIC API: MEDIA STATE UPDATE ============
+
+  /** Broadcast audio/video enabled state to all participants */
+  sendMediaStateUpdate(audioEnabled: boolean, videoEnabled: boolean): void {
+    if (!this.myNode || !this.roomInfo) return;
+
+    const msg: SignalMessage = {
+      type: 'media-state-update',
+      payload: { peerId: this.myNode.peerId, audioEnabled, videoEnabled },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    };
+
+    this.broadcastToChildren(msg);
+    if (this.parentConnection) this.sendSignal(this.parentConnection, msg);
+  }
+
+  private handleMediaStateUpdate(msg: SignalMessage) {
+    const { peerId, audioEnabled, videoEnabled } = msg.payload;
+    // Update the node's media state in our nodes map
+    const node = this.nodes.get(peerId);
+    if (node) {
+      (node as any).audioEnabled = audioEnabled;
+      (node as any).videoEnabled = videoEnabled;
+      this.nodes.set(peerId, node);
+      if (this.onTreeUpdate) this.onTreeUpdate(this.nodes);
+    }
+    // Forward through tree
+    this.broadcastToChildren(msg);
+    if (this.parentConnection && this.myNode && msg.senderId !== this.myNode.peerId) {
+      this.sendSignal(this.parentConnection, msg);
+    }
   }
 
   // ============ HELPER: TREE-ROUTED BROADCAST ============
@@ -3952,6 +4038,12 @@ export class FractalMeshEngine {
         this.requestStreamFromParent();
       }
       if (this.onConnectionStatus) this.onConnectionStatus('connected');
+      // Resolve the joinRoom promise if still pending (viewer admitted from waiting room)
+      if (this.joinRoomResolve && this.roomInfo) {
+        this.joinRoomResolve(this.roomInfo);
+        this.joinRoomResolve = null;
+        this.joinRoomReject = null;
+      }
     }
     // Forward down tree to the target peer
     this.broadcastToChildren(msg);
@@ -3962,6 +4054,12 @@ export class FractalMeshEngine {
     // If we're the denied viewer
     if (this.myNode?.peerId === peerId) {
       if (this.onError) this.onError('Your join request was denied by the host');
+      // Reject the joinRoom promise if still pending
+      if (this.joinRoomReject) {
+        this.joinRoomReject(new Error('Your join request was denied by the host'));
+        this.joinRoomResolve = null;
+        this.joinRoomReject = null;
+      }
     }
     this.broadcastToChildren(msg);
   }
