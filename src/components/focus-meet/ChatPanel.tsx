@@ -41,6 +41,8 @@ export function ChatPanel({ standalone = false }: { standalone?: boolean }) {
     setShowEmoji(false);
   };
 
+  // standalone=true → always render (used in admin tab panel & mobile drawer)
+  // standalone=false → only render when isChatOpen (desktop sidebar)
   if (!standalone && !isChatOpen) return null;
 
   const participantCount = nodes.size;

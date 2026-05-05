@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useRoomStore } from '@/store/room-store';
 import { ReactionType } from '@/lib/types';
 import { GitHubClipRecorder } from '@/lib/github-recorder';
@@ -55,11 +55,15 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
   const [showReactions, setShowReactions] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const reactionsRef = useRef<HTMLDivElement>(null);
+  const reactionsPopupRef = useRef<HTMLDivElement>(null);
   const moreRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (reactionsRef.current && !reactionsRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const clickedInsideReactionBtn = reactionsRef.current?.contains(target);
+      const clickedInsideReactionPopup = reactionsPopupRef.current?.contains(target);
+      if (!clickedInsideReactionBtn && !clickedInsideReactionPopup) {
         setShowReactions(false);
       }
       if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
@@ -151,17 +155,19 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
 
   const handleReaction = (type: ReactionType) => {
     // Send reaction via P2P to other participants
+    // engine.sendReaction() already calls onReaction internally which adds to store
     if (engine) {
       engine.sendReaction(type);
+    } else {
+      // Fallback: add locally only if engine is unavailable
+      addReaction({
+        id: `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        type,
+        senderId: myNode?.peerId || '',
+        senderName: myNode?.displayName || '',
+        timestamp: Date.now(),
+      });
     }
-    // Also add locally for immediate feedback
-    addReaction({
-      id: `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      type,
-      senderId: myNode?.peerId || '',
-      senderName: myNode?.displayName || '',
-      timestamp: Date.now(),
-    });
     setShowReactions(false);
   };
 
@@ -198,6 +204,21 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
 
   const isMobile = useIsMobile();
 
+  // Calculate popup position for reactions
+  const [reactionPopupPos, setReactionPopupPos] = useState<{ left: number; bottom: number } | null>(null);
+  const reactionBtnRef = useRef<HTMLButtonElement>(null);
+
+  const openReactionPopup = useCallback(() => {
+    if (reactionBtnRef.current) {
+      const rect = reactionBtnRef.current.getBoundingClientRect();
+      setReactionPopupPos({
+        left: rect.left + rect.width / 2,
+        bottom: window.innerHeight - rect.top + 8,
+      });
+    }
+    setShowReactions(true);
+  }, []);
+
   const handleChatToggle = () => {
     if (onMobileDrawerOpen && isMobile) {
       onMobileDrawerOpen('chat');
@@ -223,7 +244,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
   };
 
   return (
-    <div className="bg-zinc-900 border-t border-zinc-800 px-1 sm:px-4 py-2 sm:py-2.5 safe-bottom">
+    <div className="bg-zinc-900 border-t border-zinc-800 px-1 sm:px-4 py-2 sm:py-2.5 safe-bottom relative">
       <div className="flex items-center justify-center gap-0 sm:gap-1 md:gap-1.5 overflow-x-auto scrollbar-none -webkit-overflow-scrolling-touch"
         style={{ touchAction: 'manipulation' }}
       >
@@ -303,7 +324,14 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
         {/* Reactions */}
         <div className="relative flex-shrink-0" ref={reactionsRef}>
           <ControlButton
-            onClick={() => setShowReactions(!showReactions)}
+            ref={reactionBtnRef}
+            onClick={() => {
+              if (showReactions) {
+                setShowReactions(false);
+              } else {
+                openReactionPopup();
+              }
+            }}
             active={false}
             activeIcon={<Smile className="w-4 h-4 sm:w-5 sm:h-5" />}
             inactiveIcon={<Smile className="w-4 h-4 sm:w-5 sm:h-5" />}
@@ -313,21 +341,34 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
             inactiveClass="bg-zinc-700 hover:bg-zinc-600 text-white"
             isMobile={isMobile}
           />
-          {showReactions && (
-            <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-zinc-800 border border-zinc-700 rounded-xl p-1.5 flex gap-0.5 shadow-xl z-50">
-              {REACTION_EMOJIS.map(r => (
-                <button
-                  key={r.type}
-                  onClick={() => handleReaction(r.type)}
-                  className="w-10 h-10 sm:w-9 sm:h-9 rounded-lg hover:bg-zinc-700 flex items-center justify-center text-base sm:text-lg transition-colors touch-manipulation"
-                  title={r.type}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
+
+        {/* Reaction popup — rendered with fixed positioning to avoid clipping */}
+        {showReactions && reactionPopupPos && typeof window !== 'undefined' && (
+          <div
+            ref={reactionsPopupRef}
+            className="fixed bg-zinc-800 border border-zinc-700 rounded-xl p-1.5 flex gap-0.5 shadow-xl z-[100]"
+            style={{
+              left: reactionPopupPos.left,
+              bottom: reactionPopupPos.bottom,
+              transform: 'translateX(-50%)',
+            }}
+          >
+            {REACTION_EMOJIS.map(r => (
+              <button
+                key={r.type}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleReaction(r.type);
+                }}
+                className="w-10 h-10 sm:w-9 sm:h-9 rounded-lg hover:bg-zinc-700 flex items-center justify-center text-base sm:text-lg transition-colors touch-manipulation"
+                title={r.type}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Chat toggle */}
         <ControlButton
@@ -442,7 +483,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
   );
 }
 
-function ControlButton({
+const ControlButton = React.forwardRef(function ControlButton({
   onClick, active, activeIcon, inactiveIcon,
   activeLabel, inactiveLabel, activeClass, inactiveClass,
   isMobile,
@@ -456,7 +497,7 @@ function ControlButton({
   activeClass: string;
   inactiveClass: string;
   isMobile?: boolean;
-}) {
+}, ref: React.Ref<HTMLButtonElement>) {
   // Mobile: min 44px touch targets; Desktop: standard sizing
   const mobileClasses = isMobile
     ? 'min-w-[44px] min-h-[44px] px-2.5 py-2'
@@ -467,6 +508,7 @@ function ControlButton({
       <Tooltip>
         <TooltipTrigger asChild>
           <button
+            ref={ref}
             onClick={onClick}
             className={`flex flex-col items-center gap-0 sm:gap-0.5 rounded-lg sm:rounded-xl transition-all duration-200 touch-manipulation
               ${mobileClasses}
@@ -483,7 +525,7 @@ function ControlButton({
       </Tooltip>
     </TooltipProvider>
   );
-}
+});
 
 function MoreMenuItem({
   icon, label, active, onClick, danger,

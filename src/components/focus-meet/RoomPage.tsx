@@ -830,7 +830,7 @@ export function RoomPage() {
                   </button>
                 </div>
                 <div className="overflow-auto max-h-[60vh]">
-                  {mobileDrawer === 'chat' && <ChatPanel />}
+                  {mobileDrawer === 'chat' && <ChatPanel standalone />}
                   {mobileDrawer === 'participants' && <ParticipantList standalone />}
                   {mobileDrawer === 'files' && <FileSharingPanel />}
                   {mobileDrawer === 'waiting' && <WaitingRoom />}
@@ -1103,7 +1103,7 @@ export function RoomPage() {
                 </button>
               </div>
               <div className="overflow-auto max-h-[60vh]">
-                {mobileDrawer === 'chat' && <ChatPanel />}
+                {mobileDrawer === 'chat' && <ChatPanel standalone />}
                 {mobileDrawer === 'participants' && <ParticipantList standalone />}
                 {mobileDrawer === 'files' && <FileSharingPanel />}
               </div>
