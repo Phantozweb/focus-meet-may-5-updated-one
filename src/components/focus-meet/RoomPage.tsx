@@ -79,6 +79,8 @@ export function RoomPage() {
   const initRef = useRef(false);
   const coHostsRef = useRef<string[]>([]);
   const waitingRoomRef = useRef<WaitingAttendee[]>([]);
+  const prevStatusRef = useRef<NodeStatus | null>(null);
+  const shownHandRaisesRef = useRef<Set<string>>(new Set());
   const [streamDuration, setStreamDuration] = useState(0);
   const durRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [copied, setCopied] = useState(false);
@@ -213,6 +215,10 @@ export function RoomPage() {
       });
       eng.setOnConnectionStatus((status: NodeStatus) => {
         setConnectionStatus(status);
+        // Only show toasts on status TRANSITIONS, not repeated statuses
+        const prevStatus = prevStatusRef.current;
+        prevStatusRef.current = status;
+        if (status === prevStatus) return; // Skip duplicate status
         if (status === 'reconnecting') toast('Reconnecting...', { duration: 3000 });
         else if (status === 'connected') {
           toast.success('Connected!');
@@ -306,8 +312,14 @@ export function RoomPage() {
             isRaised: true,
             raisedAt: Date.now(),
           });
+          // Only show toast for NEW hand raises, not repeated updates
+          if (!shownHandRaisesRef.current.has(info.peerId)) {
+            shownHandRaisesRef.current.add(info.peerId);
+            toast(`${info.displayName} raised their hand`, { duration: 3000 });
+          }
         } else {
           removeHandRaise(info.peerId);
+          shownHandRaisesRef.current.delete(info.peerId);
         }
       });
 
@@ -342,6 +354,9 @@ export function RoomPage() {
           setConnectionStep('Connecting to signaling server...');
           const info = await eng.joinRoom(normalizedId, name, hostPeerIdParam || undefined, roleParam);
           setRoomInfo(info); setIsHost(false);
+          // Viewers should NOT have audio/video enabled by default — listen-only mode
+          setAudioEnabled(false);
+          setVideoEnabled(false);
 
           // Check if we're in the waiting room (engine sets this from isWaiting flag in room-info)
           if (eng.isInWaitingRoom()) {
@@ -873,7 +888,7 @@ export function RoomPage() {
             onClick={() => setMobileDrawer(mobileDrawer ? null : 'chat')}
             className="sm:hidden p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
           >
-            <Menu className="w-4 h-4 text-zinc-400" />
+            {mobileDrawer ? <X className="w-4 h-4 text-zinc-400" /> : <Menu className="w-4 h-4 text-zinc-400" />}
           </button>
         </div>
       </div>
@@ -901,7 +916,7 @@ export function RoomPage() {
         </div>
       </div>
 
-      {/* Mobile drawer (bottom sheet) */}
+      {/* Mobile drawer (bottom sheet) — viewer */}
       <AnimatePresence>
         {mobileDrawer && (
           <>
@@ -919,9 +934,31 @@ export function RoomPage() {
               transition={{ type: 'spring', damping: 25, stiffness: 300 }}
               className="fixed bottom-0 left-0 right-0 z-40 sm:hidden bg-zinc-900 border-t border-zinc-700 rounded-t-2xl max-h-[70vh] overflow-hidden"
             >
-              <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-                <span className="text-sm font-semibold text-zinc-200 capitalize">{mobileDrawer}</span>
-                <button onClick={() => setMobileDrawer(null)} className="p-1 rounded-lg hover:bg-zinc-800">
+              {/* Drawer header with panel tabs */}
+              <div className="flex items-center border-b border-zinc-800">
+                {/* Tab buttons for switching between panels */}
+                <div className="flex flex-1 overflow-x-auto scrollbar-none">
+                  {([
+                    { key: 'chat' as const, label: 'Chat', icon: <MessageCircle className="w-3.5 h-3.5" /> },
+                    { key: 'participants' as const, label: 'People', icon: <Users className="w-3.5 h-3.5" /> },
+                    { key: 'files' as const, label: 'Files', icon: <Copy className="w-3.5 h-3.5" /> },
+                  ]).map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setMobileDrawer(tab.key)}
+                      className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                        mobileDrawer === tab.key
+                          ? 'text-zinc-100 border-b-2 border-emerald-500'
+                          : 'text-zinc-500 hover:text-zinc-300 border-b-2 border-transparent'
+                      }`}
+                    >
+                      {tab.icon}
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+                {/* Close button */}
+                <button onClick={() => setMobileDrawer(null)} className="p-2 mr-1 rounded-lg hover:bg-zinc-800 flex-shrink-0">
                   <X className="w-4 h-4 text-zinc-400" />
                 </button>
               </div>

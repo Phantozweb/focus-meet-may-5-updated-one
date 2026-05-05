@@ -955,15 +955,19 @@ export class FractalMeshEngine {
         if (this.myNode) this.myNode.status = 'connected';
         if (msg.payload.isWaiting) {
           this.isInWaitingRoomState = true;
+          // Do NOT resolve joinRoomResolve — viewer is in waiting room, not admitted yet
+          // The promise will be resolved in handleWaitingAdmit when the host admits them
+          if (this.onConnectionStatus) this.onConnectionStatus('connected');
+        } else {
+          if (this.onConnectionStatus) this.onConnectionStatus('connected');
+          // CRITICAL: Resolve the joinRoom() promise now that we have room info
+          if (this.joinRoomResolve) {
+            this.joinRoomResolve(this.roomInfo);
+            this.joinRoomResolve = null;
+            this.joinRoomReject = null;
+          }
         }
-        if (this.onConnectionStatus) this.onConnectionStatus('connected');
         this.saveToStorage();
-        // CRITICAL: Resolve the joinRoom() promise now that we have room info
-        if (this.joinRoomResolve) {
-          this.joinRoomResolve(this.roomInfo);
-          this.joinRoomResolve = null;
-          this.joinRoomReject = null;
-        }
         return;
       }
       return;
@@ -977,17 +981,19 @@ export class FractalMeshEngine {
         if (msg.payload.isWaiting) {
           // We're in the waiting room — don't fully connect
           this.isInWaitingRoomState = true;
+          // Do NOT resolve joinRoomResolve — viewer is in waiting room, not admitted yet
+          // The promise will be resolved in handleWaitingAdmit when the host admits them
           if (this.onConnectionStatus) this.onConnectionStatus('connected');
         } else {
           if (this.onConnectionStatus) this.onConnectionStatus('connected');
+          // Resolve joinRoom promise if still pending
+          if (this.joinRoomResolve) {
+            this.joinRoomResolve(this.roomInfo);
+            this.joinRoomResolve = null;
+            this.joinRoomReject = null;
+          }
         }
         this.saveToStorage();
-        // Resolve joinRoom promise if still pending
-        if (this.joinRoomResolve) {
-          this.joinRoomResolve(this.roomInfo);
-          this.joinRoomResolve = null;
-          this.joinRoomReject = null;
-        }
         break;
       case 'parent-assigned': this.handleParentAssigned(msg); break;
       case 'assign-parent': this.handleAssignParent(msg); break;
@@ -1160,6 +1166,7 @@ export class FractalMeshEngine {
     // This is critical for scaling — roots receive the stream directly from the host
     // and relay it to their children, offloading the host.
     let parentNode: TreeNode;
+    let bestRelayNode: TreeNode | null = null;
 
     if (this.rootNodes.size > 0 && this.myNode) {
       const config = this.scalingEngine?.getCurrentConfig();
@@ -1178,12 +1185,14 @@ export class FractalMeshEngine {
         // we need to assign to a branch/sub-branch
         // WHY: In tier 4+, full roots should trigger branch assignment
         const bestRelay = this.selectBestRelay(device || this.myDevice);
+        bestRelayNode = bestRelay;
         parentNode = bestRelay || this.myNode;
       }
     } else {
       // No roots yet — WHY: We're in tier 1 (under 50 viewers)
       // or roots haven't been selected yet (first 20 seconds)
       const bestRelay = this.selectBestRelay(device || this.myDevice);
+      bestRelayNode = bestRelay;
       parentNode = bestRelay || this.myNode;
     }
 
@@ -1320,8 +1329,8 @@ export class FractalMeshEngine {
     // Tree-Honeycomb: assign viewer to a honeycomb cell
     if (this.honeycombEngine) {
       const result = this.honeycombEngine.assignViewerToCell(peerId);
-      if (result.needsNewCell && bestRelay) {
-        this.honeycombEngine.createCell(bestRelay.peerId, [peerId]);
+      if (result.needsNewCell && bestRelayNode) {
+        this.honeycombEngine.createCell(bestRelayNode.peerId, [peerId]);
       }
     }
 

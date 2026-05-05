@@ -93,24 +93,6 @@ const BANDWIDTH_LEVELS: Record<'good' | 'ok' | 'poor', BandwidthLevel> = {
   poor: { label: 'Poor', color: 'text-amber-400',   dotClass: 'bg-amber-400',   icon: <TrendingDown className="w-3 h-3" /> },
 };
 
-// Fallback demo slides — only used when no real slides from store
-interface SlideData {
-  id: number;
-  title: string;
-  subtitle: string;
-  color: string;
-}
-
-const FALLBACK_SLIDES: SlideData[] = [
-  { id: 0, title: 'Welcome to Focus Meet', subtitle: 'Adaptive live session platform', color: 'from-emerald-900 to-zinc-900' },
-  { id: 1, title: 'The Problem', subtitle: 'Why traditional sessions fail', color: 'from-amber-900 to-zinc-900' },
-  { id: 2, title: 'Adaptive Delivery', subtitle: 'Content follows your bandwidth', color: 'from-violet-900 to-zinc-900' },
-  { id: 3, title: 'Slide Sync Engine', subtitle: 'Stay in sync, always', color: 'from-cyan-900 to-zinc-900' },
-  { id: 4, title: 'Bandwidth Savings', subtitle: 'Up to 90% data reduction', color: 'from-rose-900 to-zinc-900' },
-  { id: 5, title: 'Live Demo', subtitle: 'See it in action', color: 'from-teal-900 to-zinc-900' },
-  { id: 6, title: 'Q&A', subtitle: 'Ask us anything', color: 'from-orange-900 to-zinc-900' },
-];
-
 // ────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────
@@ -144,10 +126,9 @@ export function ViewerExperience() {
     streamHealth,
   } = useRoomStore();
 
-  // ── Use real slides from store, fallback to demo slides ──
+  // ── Use real slides from store ──
   const hasRealSlides = slides.length > 0;
-  const activeSlides = hasRealSlides ? slides : FALLBACK_SLIDES;
-  const totalSlides = activeSlides.length;
+  const totalSlides = hasRealSlides ? slides.length : 0;
 
   // ── Derived network metrics (from real store data) ──
   const bandwidthKbps = useMemo(() => {
@@ -172,6 +153,17 @@ export function ViewerExperience() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [autoFollow, setAutoFollow] = useState(true);
 
+  // ── Video ref for stable srcObject assignment (prevents flickering) ──
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && incomingStream) {
+      if (videoRef.current.srcObject !== incomingStream) {
+        videoRef.current.srcObject = incomingStream;
+      }
+    }
+  }, [incomingStream]);
+
   // ── Local slide index for manual navigation ──
   const [localSlideIndex, setLocalSlideIndex] = useState(0);
 
@@ -189,13 +181,13 @@ export function ViewerExperience() {
   // ── Auto-switch based on available content ──
   const contentBasedMode = useMemo(() => {
     const hasIncomingVideo = !!incomingStream;
-    const hasSlides = isPresenting && (slides.length > 0 || !hasRealSlides); // real or fallback slides
+    const hasSlides = isPresenting && slides.length > 0; // Only real slides, not fallback
 
     if (hasIncomingVideo && hasSlides) return 'full'; // Video + slides
     if (hasIncomingVideo) return 'full'; // Video only
     if (hasSlides) return 'slides-audio'; // Slides + audio, no video
-    return 'audio-only'; // Audio only
-  }, [incomingStream, isPresenting, slides.length, hasRealSlides]);
+    return 'audio-only'; // Audio only — no video and no real slides
+  }, [incomingStream, isPresenting, slides.length]);
 
   // ── Determine suggested mode: content availability + bandwidth ──
   const suggestedMode = useMemo(() => {
@@ -207,16 +199,16 @@ export function ViewerExperience() {
 
     // If content says audio-only but bandwidth allows more, respect content (no video available)
     if (contentMode === 'audio-only') return 'audio-only';
-    if (contentMode === 'slides-audio' && bandwidthMode === 'audio-only' && !hasRealSlides) return 'audio-only';
+    if (contentMode === 'slides-audio' && bandwidthMode === 'audio-only') return 'audio-only';
 
     // If content says full but bandwidth says slides-audio, use slides-audio (save bandwidth)
     if (contentMode === 'full' && bandwidthMode !== 'full') {
-      // Downgrade to slides-audio if slides available, else audio-only
-      return hasRealSlides || isPresenting ? 'slides-audio' : bandwidthMode;
+      // Downgrade to slides-audio if real slides available, else audio-only
+      return hasRealSlides ? 'slides-audio' : 'audio-only';
     }
 
     return contentMode;
-  }, [contentBasedMode, streamQuality, hasRealSlides, isPresenting]);
+  }, [contentBasedMode, streamQuality, hasRealSlides]);
 
   // ── Auto-switch mode (unless manual override) ──
   useEffect(() => {
@@ -376,8 +368,6 @@ export function ViewerExperience() {
 
   // Get current slide data — either a real image or a fallback demo slide
   const isRealSlide = hasRealSlides && currentSlide < slides.length;
-  const fallbackSlide = !hasRealSlides && currentSlide < FALLBACK_SLIDES.length ? FALLBACK_SLIDES[currentSlide] : null;
-
   // Render slide content for slides-audio mode
   const renderSlideContent = () => {
     if (isRealSlide) {
@@ -391,24 +381,9 @@ export function ViewerExperience() {
       );
     }
 
-    if (fallbackSlide) {
-      return (
-        <div className={`absolute inset-0 bg-gradient-to-br ${fallbackSlide.color} flex items-center justify-center`}>
-          <div className="text-center px-6 sm:px-16 max-w-2xl">
-            <h2 className="text-xl sm:text-3xl lg:text-4xl font-bold text-white mb-3 leading-tight">
-              {fallbackSlide.title}
-            </h2>
-            <p className="text-zinc-400 text-sm sm:text-base">
-              {fallbackSlide.subtitle}
-            </p>
-          </div>
-        </div>
-      );
-    }
-
     return (
       <div className="absolute inset-0 bg-zinc-800 flex items-center justify-center">
-        <p className="text-zinc-500 text-sm">No slide available</p>
+        <p className="text-zinc-500 text-sm">No slides shared yet</p>
       </div>
     );
   };
@@ -419,6 +394,21 @@ export function ViewerExperience() {
 
   return (
     <div className="h-full w-full bg-zinc-950 flex flex-col overflow-hidden relative">
+
+      {/* Always-on audio — plays host audio in all viewer modes */}
+      {incomingStream && (
+        <video
+          autoPlay
+          playsInline
+          className="w-px h-px absolute opacity-0 pointer-events-none"
+          aria-hidden="true"
+          ref={(el) => {
+            if (el && incomingStream && el.srcObject !== incomingStream) {
+              el.srcObject = incomingStream;
+            }
+          }}
+        />
+      )}
 
       {/* ═══ TOP BAR ═══ */}
       <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-zinc-900 border-b border-zinc-800 flex-shrink-0 gap-2">
@@ -580,10 +570,10 @@ export function ViewerExperience() {
               <div className="flex-1 relative m-2 sm:m-3 rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
                 {incomingStream ? (
                   <video
+                    ref={videoRef}
                     autoPlay
                     playsInline
                     muted={isMuted}
-                    ref={el => { if (el && incomingStream) el.srcObject = incomingStream; }}
                     className="w-full h-full object-contain"
                   />
                 ) : (
@@ -600,15 +590,12 @@ export function ViewerExperience() {
                 )}
 
                 {/* Slide title overlay */}
-                {isPresenting && (fallbackSlide || isRealSlide) && (
+                {isPresenting && isRealSlide && (
                   <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-gradient-to-t from-zinc-900/95 via-zinc-900/60 to-transparent">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="text-zinc-200 text-sm font-medium truncate">
-                          {isRealSlide ? `Slide ${currentSlide + 1}` : fallbackSlide?.title}
-                        </p>
-                        <p className="text-zinc-500 text-xs truncate">
-                          {isRealSlide ? '' : fallbackSlide?.subtitle}
+                          Slide {currentSlide + 1}
                         </p>
                       </div>
                       <Badge variant="outline" className={`text-[9px] flex-shrink-0 ${MODE_CONFIG['full'].borderColor} ${MODE_CONFIG['full'].color} ${MODE_CONFIG['full'].bgColor}`}>
@@ -686,33 +673,59 @@ export function ViewerExperience() {
                 ))}
               </div>
 
-              {/* Speaker placeholder */}
+              {/* Speaker placeholder / Waiting state */}
               <div className="flex flex-col items-center gap-3">
-                <div className="w-16 h-16 rounded-full bg-zinc-800 border-2 border-amber-500/30 flex items-center justify-center">
-                  <Headphones className="w-7 h-7 text-amber-400" />
+                <div className={`w-16 h-16 rounded-full flex items-center justify-center ${
+                  incomingStream
+                    ? 'bg-zinc-800 border-2 border-amber-500/30'
+                    : 'bg-zinc-800/50 border-2 border-zinc-700 animate-pulse'
+                }`}>
+                  {incomingStream ? (
+                    <Headphones className="w-7 h-7 text-amber-400" />
+                  ) : (
+                    <Radio className="w-7 h-7 text-zinc-500" />
+                  )}
                 </div>
                 <div className="text-center">
-                  <p className="text-zinc-400 text-xs mb-1">Now presenting</p>
-                  <h3 className="text-zinc-200 text-lg sm:text-xl font-semibold">
-                    {isRealSlide ? `Slide ${currentSlide + 1}` : (fallbackSlide?.title || 'Live Session')}
-                  </h3>
-                  <p className="text-zinc-500 text-xs mt-1">
-                    {isRealSlide ? `Slide ${currentSlide + 1} of ${totalSlides}` : (fallbackSlide?.subtitle || `Slide ${currentSlide + 1} of ${totalSlides}`)}
-                  </p>
+                  {incomingStream ? (
+                    <>
+                      <p className="text-zinc-400 text-xs mb-1">Now presenting</p>
+                      <h3 className="text-zinc-200 text-lg sm:text-xl font-semibold">
+                        {isRealSlide ? `Slide ${currentSlide + 1}` : 'Live Session'}
+                      </h3>
+                      {isRealSlide && (
+                        <p className="text-zinc-500 text-xs mt-1">
+                          Slide {currentSlide + 1} of {totalSlides}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-zinc-500 text-xs mb-1">Waiting</p>
+                      <h3 className="text-zinc-300 text-lg sm:text-xl font-semibold">
+                        Waiting for presenter
+                      </h3>
+                      <p className="text-zinc-600 text-xs mt-1">
+                        Audio will start when the presenter begins
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
 
-              {/* Progress dots */}
-              <div className="flex items-center gap-1.5">
-                {activeSlides.map((_, i) => (
-                  <div
-                    key={i}
-                    className={`w-2 h-2 rounded-full transition-colors ${
-                      i === currentSlide ? 'bg-amber-400' : i < currentSlide ? 'bg-zinc-600' : 'bg-zinc-800'
-                    }`}
-                  />
-                ))}
-              </div>
+              {/* Progress dots — only show when there are real slides */}
+              {hasRealSlides && (
+                <div className="flex items-center gap-1.5">
+                  {slides.map((_, i) => (
+                    <div
+                      key={i}
+                      className={`w-2 h-2 rounded-full transition-colors ${
+                        i === currentSlide ? 'bg-amber-400' : i < currentSlide ? 'bg-zinc-600' : 'bg-zinc-800'
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
 
               {/* Audio controls */}
               <div className="flex items-center gap-3">
@@ -743,8 +756,8 @@ export function ViewerExperience() {
         </div>
       </div>
 
-      {/* ═══ SLIDE THUMBNAILS (Full & Slides+Audio only) ═══ */}
-      {activeMode !== 'audio-only' && (
+      {/* ═══ SLIDE THUMBNAILS (Full & Slides+Audio only, only when real slides exist) ═══ */}
+      {activeMode !== 'audio-only' && hasRealSlides && (
         <div className="px-2 sm:px-3 py-2 bg-zinc-900 border-t border-zinc-800 flex-shrink-0">
           <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-1 scrollbar-thin">
             {autoFollow && (
@@ -761,46 +774,24 @@ export function ViewerExperience() {
                 Re-join live
               </button>
             )}
-            {hasRealSlides ? (
-              // Render real slide thumbnails from store
-              slides.map((slideUrl, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleSlideNav(i)}
-                  className={`flex-shrink-0 w-14 h-9 sm:w-18 sm:h-11 rounded-md border transition-all overflow-hidden ${
-                    i === currentSlide
-                      ? 'border-emerald-500 ring-1 ring-emerald-500/50'
-                      : 'border-zinc-700 hover:border-zinc-500'
-                  }`}
-                >
-                  <img
-                    src={slideUrl}
-                    alt={`Slide ${i + 1}`}
-                    className="w-full h-full object-cover"
-                    draggable={false}
-                  />
-                </button>
-              ))
-            ) : (
-              // Fallback demo slide thumbnails
-              FALLBACK_SLIDES.map((s, i) => (
-                <button
-                  key={s.id}
-                  onClick={() => handleSlideNav(i)}
-                  className={`flex-shrink-0 w-14 h-9 sm:w-18 sm:h-11 rounded-md border transition-all overflow-hidden ${
-                    i === currentSlide
-                      ? 'border-emerald-500 ring-1 ring-emerald-500/50'
-                      : 'border-zinc-700 hover:border-zinc-500'
-                  }`}
-                >
-                  <div className={`w-full h-full bg-gradient-to-br ${s.color} flex items-center justify-center`}>
-                    <span className={`text-[6px] sm:text-[7px] font-medium ${i === currentSlide ? 'text-white' : 'text-zinc-400'} text-center leading-tight px-0.5`}>
-                      {s.title}
-                    </span>
-                  </div>
-                </button>
-              ))
-            )}
+            {slides.map((slideUrl, i) => (
+              <button
+                key={i}
+                onClick={() => handleSlideNav(i)}
+                className={`flex-shrink-0 w-14 h-9 sm:w-18 sm:h-11 rounded-md border transition-all overflow-hidden ${
+                  i === currentSlide
+                    ? 'border-emerald-500 ring-1 ring-emerald-500/50'
+                    : 'border-zinc-700 hover:border-zinc-500'
+                }`}
+              >
+                <img
+                  src={slideUrl}
+                  alt={`Slide ${i + 1}`}
+                  className="w-full h-full object-cover"
+                  draggable={false}
+                />
+              </button>
+            ))}
           </div>
         </div>
       )}

@@ -351,8 +351,8 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
           isMobile={isMobile}
         />
 
-        {/* Files toggle - hidden on very small mobile */}
-        <div className="hidden sm:block flex-shrink-0">
+        {/* Files toggle */}
+        <div className="flex-shrink-0">
           <ControlButton
             onClick={handleFilesToggle}
             active={isFilesOpen}

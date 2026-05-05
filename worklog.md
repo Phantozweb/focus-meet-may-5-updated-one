@@ -242,3 +242,41 @@ Stage Summary:
 - JoinRoomModal supports invite link parameters
 - Event section has Join Link button for easy sharing
 ---
+Task ID: 1
+Agent: peer-tree-fixer
+Task: Fix 5 critical bugs in peer-tree.ts and RoomPage.tsx
+
+Work Log:
+- Bug 1: Fixed `bestRelay is not defined` at line 1323 in processJoinRoom — declared `bestRelayNode` at method top scope and assigned it in both if/else branches, then used `bestRelayNode` instead of `bestRelay` at the honeycomb engine call site
+- Bug 2: Fixed viewer auto-joins before host approval — when `room-info` arrives with `isWaiting: true`, `joinRoomResolve` is NO longer resolved. The promise only resolves when: (a) `room-info` arrives without `isWaiting` (direct admission), or (b) `handleWaitingAdmit` fires when the host admits the viewer. Fixed in BOTH the early-return block (lines ~952-970) and the switch case handler (lines ~978-997).
+- Bug 3: Fixed connection/reconnecting toast spam — added `prevStatusRef` to track previous connection status and only show toasts on status TRANSITIONS (not repeated identical statuses)
+- Bug 4: Fixed hand raise toast spam — added `shownHandRaisesRef` Set to track which peer IDs have already shown a toast. Only shows toast for NEW hand raises; clears entry when hand is lowered
+- Bug 5: Fixed viewer default audio/video state — added `setAudioEnabled(false)` and `setVideoEnabled(false)` in the viewer join flow so viewers start in listen-only mode
+- All lint checks pass with zero errors
+
+Stage Summary:
+- 5 critical bugs fixed across peer-tree.ts and RoomPage.tsx
+- bestRelay scope error eliminated — honeycomb cell creation now works correctly
+- Waiting room bypass fixed — viewers cannot enter room before host admission
+- Toast spam eliminated for both connection status and hand raise notifications
+- Viewers now properly start with audio/video disabled (listen-only mode)
+---
+Task ID: 2
+Agent: viewer-ui-fixer
+Task: Fix viewer-side UI issues — flickering video, broken mobile UI, audio continuity, fallback slides
+
+Work Log:
+- Issue 1 (Flickering video): Replaced inline ref callback `ref={el => { if (el && incomingStream) el.srcObject = incomingStream; }}` with stable `useRef<HTMLVideoElement>` + `useEffect` pattern. The useEffect only sets srcObject when the incomingStream reference actually changes, preventing re-assignment on every render.
+- Issue 2 (Mobile UI broken): Updated viewer's mobile drawer in RoomPage.tsx with tab navigation (Chat/People/Files tabs in drawer header) matching the host's pattern. Changed hamburger menu icon to show X when drawer is open. Made Files button visible on mobile in Controls.tsx (removed `hidden sm:block` wrapper).
+- Issue 3 (Audio continuity in slide/audio mode): Added an always-playing hidden video element (`w-px h-px absolute opacity-0 pointer-events-none`) at the top of ViewerExperience that receives the incomingStream and plays audio in all viewer modes, ensuring audio continues even when the main video element is hidden in slides-audio or audio-only modes.
+- Issue 4 (Fallback slides showing when no one is presenting): Removed FALLBACK_SLIDES constant and all references to it. Updated `contentBasedMode` to only consider real slides (`slides.length > 0`), not fallback demo slides. Changed slide thumbnails condition from `hasRealSlides || isPresenting` to `hasRealSlides` only. Updated audio-only mode to show "Waiting for presenter" state with animated Radio icon when no incoming stream exists. Updated slide title overlay to only show for real slides (`isPresenting && isRealSlide`). Updated `renderSlideContent()` to show "No slides shared yet" instead of fallback demo slides. Updated progress dots to only show for real slides.
+- Cleaned up unused variables: removed `activeSlides`, `fallbackSlide`, `SlideData` interface, `FALLBACK_SLIDES` array.
+- Lint check passed with zero errors.
+
+Stage Summary:
+- Video no longer flickers — useEffect + useRef prevents srcObject re-assignment on every render
+- Mobile viewers can now access Chat, People, and Files via tab-based mobile drawer with panel switching
+- Audio plays continuously in all viewer modes (full, slides-audio, audio-only) via always-on hidden video element
+- Demo/fallback slides removed — viewer shows clean "Waiting for presenter" state when no real content is available
+- Slide thumbnails only show when real slides are being shared
+- All lint checks pass
