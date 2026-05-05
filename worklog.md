@@ -22,3 +22,22 @@ Stage Summary:
 - Backend: peer-tree.ts fixes for toast spam, reaction propagation, bot persistence
 - Frontend: PPTX rendering, mobile UI, grid layout, hand raise notifications, dropdown fixes
 - All lint checks pass, dev server compiles successfully
+
+---
+Task ID: 2
+Agent: Main
+Task: Fix mobile chat sidebar not showing + reactions not working + push to GitHub
+
+Work Log:
+- Fixed chat not showing in mobile drawer: ChatPanel had `if (!standalone && !isChatOpen) return null` which caused it to render nothing in the mobile drawer since `isChatOpen` is false on mobile (drawer is separate). Added `standalone` prop to ChatPanel in both host and viewer mobile drawer renders.
+- Fixed reactions double-add bug: Controls.tsx `handleReaction()` was calling both `addReaction()` locally AND `engine.sendReaction()` which internally calls `onReaction` → `addReaction()`. Removed the redundant local `addReaction()` call; now only `engine.sendReaction()` adds to the store.
+- Fixed reaction popup clipping: The controls bar uses `overflow-x-auto` which clips absolutely-positioned popups. Changed the reaction popup from `position: absolute` inside the scrolling container to `position: fixed` with calculated coordinates from the button's bounding rect. Added `reactionBtnRef` and `reactionPopupPos` state for positioning.
+- Updated click-outside handler to account for the fixed-position popup using `reactionsPopupRef`.
+- Converted `ControlButton` to `React.forwardRef` to support the reaction button ref.
+- Created GitHub repo: https://github.com/Phantozweb/focus-meet-may-5-updated-one
+- Pushed all code to GitHub successfully.
+
+Stage Summary:
+- Mobile chat now shows properly in both host and viewer drawers
+- Reaction emoji now works: popup is visible (not clipped), single add (not double), proper fixed positioning
+- Code pushed to GitHub at Phantozweb/focus-meet-may-5-updated-one
