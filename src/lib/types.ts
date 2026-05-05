@@ -263,6 +263,179 @@ export interface SignalMessage {
   timestamp: number;
 }
 
+// ============ FAKE USER TYPES ============
+
+export type FakeUserPersona = 
+  | 'enthusiastic-student' 
+  | 'quiet-observer' 
+  | 'active-participant'
+  | 'networking-professional'
+  | 'casual-attendee'
+  | 'tech-enthusiast'
+  | 'industry-expert'
+  | 'curious-learner';
+
+export interface FakeUserPersonaProfile {
+  id: FakeUserPersona;
+  label: string;
+  emoji: string;
+  description: string;
+  chatStyle: 'enthusiastic' | 'formal' | 'casual' | 'questioning' | 'minimal';
+  reactionFrequency: 'high' | 'medium' | 'low';
+  chatFrequency: 'high' | 'medium' | 'low';
+  sampleMessages: string[];
+}
+
+export const FAKE_USER_PERSONAS: FakeUserPersonaProfile[] = [
+  {
+    id: 'enthusiastic-student',
+    label: 'Enthusiastic Student',
+    emoji: '🎓',
+    description: 'Always excited, asks lots of questions, reacts frequently',
+    chatStyle: 'enthusiastic',
+    reactionFrequency: 'high',
+    chatFrequency: 'high',
+    sampleMessages: [
+      'This is so interesting!',
+      'Can you explain that part again?',
+      'Amazing presentation! 🔥',
+      'I learned so much from this!',
+      'Wow, never thought about it that way!',
+    ],
+  },
+  {
+    id: 'quiet-observer',
+    label: 'Quiet Observer',
+    emoji: '👁️',
+    description: 'Watches silently, rarely chats, occasional reactions',
+    chatStyle: 'minimal',
+    reactionFrequency: 'low',
+    chatFrequency: 'low',
+    sampleMessages: [
+      '👍',
+      'Noted',
+      'Thanks for sharing',
+    ],
+  },
+  {
+    id: 'active-participant',
+    label: 'Active Participant',
+    emoji: '💬',
+    description: 'Engages regularly, asks thoughtful questions',
+    chatStyle: 'formal',
+    reactionFrequency: 'medium',
+    chatFrequency: 'medium',
+    sampleMessages: [
+      'Great point about myopia management',
+      'How does this compare to traditional approaches?',
+      'I agree with that assessment',
+      'Could you share the study reference?',
+    ],
+  },
+  {
+    id: 'networking-professional',
+    label: 'Networking Professional',
+    emoji: '🤝',
+    description: 'Professional tone, connects with others, shares insights',
+    chatStyle: 'formal',
+    reactionFrequency: 'medium',
+    chatFrequency: 'medium',
+    sampleMessages: [
+      'Excellent session, very relevant to our practice',
+      'Would love to connect and discuss further',
+      'This aligns with what we see in our clinic',
+      'Interesting perspective on contact lens fitting',
+    ],
+  },
+  {
+    id: 'casual-attendee',
+    label: 'Casual Attendee',
+    emoji: '☕',
+    description: 'Relaxed, casual comments, enjoys the session',
+    chatStyle: 'casual',
+    reactionFrequency: 'medium',
+    chatFrequency: 'low',
+    sampleMessages: [
+      'Nice one!',
+      'Good stuff 👍',
+      'Enjoying this!',
+      'Makes sense',
+    ],
+  },
+  {
+    id: 'tech-enthusiast',
+    label: 'Tech Enthusiast',
+    emoji: '💻',
+    description: 'Focuses on the technology, asks technical questions',
+    chatStyle: 'questioning',
+    reactionFrequency: 'medium',
+    chatFrequency: 'medium',
+    sampleMessages: [
+      'How does the P2P architecture handle NAT traversal?',
+      'The adaptive quality switching is impressive',
+      'What codec is being used for the video stream?',
+      'Interesting approach to bandwidth management',
+    ],
+  },
+  {
+    id: 'industry-expert',
+    label: 'Industry Expert',
+    emoji: '🏆',
+    description: 'Shares professional insights, authoritative tone',
+    chatStyle: 'formal',
+    reactionFrequency: 'low',
+    chatFrequency: 'medium',
+    sampleMessages: [
+      'In our experience, the results have been consistent with this finding',
+      'The key is patient selection — not everyone is a candidate',
+      'We published similar findings last year',
+      'Important to consider the long-term outcomes',
+    ],
+  },
+  {
+    id: 'curious-learner',
+    label: 'Curious Learner',
+    emoji: '🧠',
+    description: 'Always curious, asks why and how questions',
+    chatStyle: 'questioning',
+    reactionFrequency: 'high',
+    chatFrequency: 'high',
+    sampleMessages: [
+      'Why does that approach work better?',
+      'How do you handle edge cases?',
+      'What happens if the patient has astigmatism?',
+      'Can you elaborate on that mechanism?',
+      'Really curious about the clinical evidence here',
+    ],
+  },
+];
+
+export interface FakeUser {
+  id: string;
+  peerId: string;
+  displayName: string;
+  persona: FakeUserPersona;
+  isActive: boolean;
+  joinedAt: number;
+  autoBehavior: boolean; // If true, fake user auto-chats/reacts
+  lastActivityAt: number;
+}
+
+export interface ImpersonationState {
+  isImpersonating: boolean;
+  targetPeerId: string | null;
+  targetDisplayName: string | null;
+  mode: 'chat' | 'react' | 'hand' | null;
+}
+
+export interface HostAdminSection {
+  id: string;
+  label: string;
+  icon: string;
+  badge?: number;
+  badgeColor?: string;
+}
+
 // ============ CONSTANTS ============
 
 // Cluster size before spawning sub-cluster

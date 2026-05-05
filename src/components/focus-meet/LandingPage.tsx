@@ -32,13 +32,26 @@ const ACCESS_CODES: Record<string, { role: 'Host' | 'Speaker' | 'Moderator'; col
 
 // ============ JOIN ROOM MODAL ============
 
-function JoinRoomModal({ open, onClose, onSwitchToLogin, devMode, autoJoin }: { open: boolean; onClose: () => void; onSwitchToLogin: () => void; devMode?: boolean; autoJoin?: boolean }) {
+function JoinRoomModal({ open, onClose, onSwitchToLogin, devMode, autoJoin, prefilledRoom, prefilledHostPeer }: { open: boolean; onClose: () => void; onSwitchToLogin: () => void; devMode?: boolean; autoJoin?: boolean; prefilledRoom?: string; prefilledHostPeer?: string }) {
   const [joinName, setJoinName] = useState(devMode ? 'Dev Tester' : '');
   const [joinEmail, setJoinEmail] = useState(devMode ? 'dev@test.focuslinks.in' : '');
   const [membershipId, setMembershipId] = useState(devMode ? 'DEV001' : '');
   const [joinError, setJoinError] = useState('');
   const [agreedPrecautions, setAgreedPrecautions] = useState(!!devMode);
   const autoJoinRef = useRef(false);
+  // Parse invite link parameters from URL hash at init time
+  const inviteParams = useMemo(() => {
+    if (typeof window === 'undefined') return { room: prefilledRoom || '', hostPeer: prefilledHostPeer || '' };
+    const hash = window.location.hash;
+    const params = new URLSearchParams(hash.replace('#', ''));
+    if (params.get('join') === 'true') {
+      return {
+        room: params.get('room') || prefilledRoom || '',
+        hostPeer: params.get('hostPeer') || prefilledHostPeer || '',
+      };
+    }
+    return { room: prefilledRoom || '', hostPeer: prefilledHostPeer || '' };
+  }, [prefilledRoom, prefilledHostPeer]);
 
   const handleJoin = () => {
     setJoinError('');
@@ -207,6 +220,17 @@ function JoinRoomModal({ open, onClose, onSwitchToLogin, devMode, autoJoin }: { 
             >
               Join as Viewer <ArrowRight className="w-4 h-4 ml-2" />
             </Button>
+
+            {/* Invite link info — shown when room/hostPeer are prefilled */}
+            {inviteParams.room && (
+              <div className="bg-blue-600/5 border border-blue-500/20 rounded-xl p-3 flex items-center gap-2">
+                <Link2 className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                <div>
+                  <p className="text-[10px] text-zinc-500">Joining via invite link</p>
+                  <p className="text-xs font-mono text-blue-400">{inviteParams.room}</p>
+                </div>
+              </div>
+            )}
 
             {/* Switch to Login */}
             <div className="text-center pt-1">
@@ -436,6 +460,40 @@ function LoginModal({ open, onClose, prefilledEmail, prefilledAccessId, autoSign
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Quick Access — Dev Credentials */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Zap className="w-3.5 h-3.5 text-zinc-500" />
+                <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Quick Access</p>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  onClick={() => { setEmail('dev-host@test.focuslinks.in'); setAccessId('X9M2PK'); setLoginError(''); }}
+                  className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-emerald-600/10 border border-emerald-500/30 hover:bg-emerald-600/20 transition-colors cursor-pointer"
+                >
+                  <Video className="w-5 h-5 text-emerald-400" />
+                  <span className="text-[10px] font-bold text-emerald-400">Host</span>
+                  <span className="text-[9px] font-mono text-zinc-500">X9M2PK</span>
+                </button>
+                <button
+                  onClick={() => { setEmail('dev-speaker@test.focuslinks.in'); setAccessId('SPK001'); setLoginError(''); }}
+                  className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-blue-600/10 border border-blue-500/30 hover:bg-blue-600/20 transition-colors cursor-pointer"
+                >
+                  <Monitor className="w-5 h-5 text-blue-400" />
+                  <span className="text-[10px] font-bold text-blue-400">Speaker</span>
+                  <span className="text-[9px] font-mono text-zinc-500">SPK001</span>
+                </button>
+                <button
+                  onClick={() => { setEmail('dev-mod@test.focuslinks.in'); setAccessId('MOD001'); setLoginError(''); }}
+                  className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-amber-600/10 border border-amber-500/30 hover:bg-amber-600/20 transition-colors cursor-pointer"
+                >
+                  <Shield className="w-5 h-5 text-amber-400" />
+                  <span className="text-[10px] font-bold text-amber-400">Moderator</span>
+                  <span className="text-[9px] font-mono text-zinc-500">MOD001</span>
+                </button>
+              </div>
+            </div>
 
             {/* Info Banner */}
             <div className="bg-emerald-600/5 border border-emerald-500/20 rounded-xl p-4 space-y-2">
@@ -728,6 +786,18 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               <Link2 className="w-4 h-4 text-blue-400" />
               <span className="text-xs sm:text-sm font-medium text-zinc-300">{linkCopied ? 'Link copied!' : 'Share'}</span>
             </button>
+            <button
+              onClick={async () => {
+                const joinUrl = window.location.origin + window.location.pathname + '#join=true&room=' + EVENT_ROOM_ID + '&hostPeer=fm-' + EVENT_ROOM_ID + '-host';
+                await navigator.clipboard.writeText(joinUrl);
+                setLinkCopied(true);
+                setTimeout(() => setLinkCopied(false), 2000);
+              }}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <Eye className="w-4 h-4 text-emerald-400" />
+              <span className="text-xs sm:text-sm font-medium text-zinc-300">{linkCopied ? 'Link copied!' : 'Join Link'}</span>
+            </button>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
@@ -893,35 +963,59 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <button
                 onClick={devEnterAsHost}
-                className="flex flex-col items-center gap-2 p-4 rounded-xl bg-emerald-600/10 border border-emerald-500/30 hover:bg-emerald-600/20 transition-colors"
+                className="group flex flex-col items-center gap-2 p-4 rounded-xl bg-emerald-600/10 border border-emerald-500/30 hover:bg-emerald-600/20 hover:border-emerald-500/50 transition-all cursor-pointer"
               >
-                <Video className="w-6 h-6 text-emerald-400" />
+                <div className="w-10 h-10 rounded-lg bg-emerald-600/20 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <Video className="w-5 h-5 text-emerald-400" />
+                </div>
                 <span className="text-xs font-bold text-emerald-400">Host</span>
-                <span className="text-[9px] text-zinc-500">Sign in & start room</span>
+                <span className="text-[9px] text-zinc-500 text-center">Full control, start & manage room</span>
+                <div className="space-y-0.5 text-center">
+                  <p className="text-[9px] font-mono text-emerald-400/60">X9M2PK</p>
+                  <p className="text-[8px] text-zinc-600 truncate max-w-[100px]">dev-host@test.focuslinks.in</p>
+                </div>
               </button>
               <button
                 onClick={devEnterAsSpeaker}
-                className="flex flex-col items-center gap-2 p-4 rounded-xl bg-blue-600/10 border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
+                className="group flex flex-col items-center gap-2 p-4 rounded-xl bg-blue-600/10 border border-blue-500/30 hover:bg-blue-600/20 hover:border-blue-500/50 transition-all cursor-pointer"
               >
-                <Monitor className="w-6 h-6 text-blue-400" />
+                <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <Monitor className="w-5 h-5 text-blue-400" />
+                </div>
                 <span className="text-xs font-bold text-blue-400">Speaker</span>
-                <span className="text-[9px] text-zinc-500">Sign in to present</span>
+                <span className="text-[9px] text-zinc-500 text-center">Present with camera & mic</span>
+                <div className="space-y-0.5 text-center">
+                  <p className="text-[9px] font-mono text-blue-400/60">SPK001</p>
+                  <p className="text-[8px] text-zinc-600 truncate max-w-[100px]">dev-speaker@test.focuslinks.in</p>
+                </div>
               </button>
               <button
                 onClick={devEnterAsModerator}
-                className="flex flex-col items-center gap-2 p-4 rounded-xl bg-amber-600/10 border border-amber-500/30 hover:bg-amber-600/20 transition-colors"
+                className="group flex flex-col items-center gap-2 p-4 rounded-xl bg-amber-600/10 border border-amber-500/30 hover:bg-amber-600/20 hover:border-amber-500/50 transition-all cursor-pointer"
               >
-                <Shield className="w-6 h-6 text-amber-400" />
+                <div className="w-10 h-10 rounded-lg bg-amber-600/20 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <Shield className="w-5 h-5 text-amber-400" />
+                </div>
                 <span className="text-xs font-bold text-amber-400">Moderator</span>
-                <span className="text-[9px] text-zinc-500">Sign in to manage</span>
+                <span className="text-[9px] text-zinc-500 text-center">Manage chat, Q&A & attendees</span>
+                <div className="space-y-0.5 text-center">
+                  <p className="text-[9px] font-mono text-amber-400/60">MOD001</p>
+                  <p className="text-[8px] text-zinc-600 truncate max-w-[100px]">dev-mod@test.focuslinks.in</p>
+                </div>
               </button>
               <button
                 onClick={devEnterAsViewer}
-                className="flex flex-col items-center gap-2 p-4 rounded-xl bg-zinc-600/10 border border-zinc-500/30 hover:bg-zinc-600/20 transition-colors"
+                className="group flex flex-col items-center gap-2 p-4 rounded-xl bg-zinc-600/10 border border-zinc-500/30 hover:bg-zinc-600/20 hover:border-zinc-500/50 transition-all cursor-pointer"
               >
-                <Eye className="w-6 h-6 text-zinc-400" />
+                <div className="w-10 h-10 rounded-lg bg-zinc-600/20 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <Eye className="w-5 h-5 text-zinc-400" />
+                </div>
                 <span className="text-xs font-bold text-zinc-400">Viewer</span>
-                <span className="text-[9px] text-zinc-500">Watch & interact</span>
+                <span className="text-[9px] text-zinc-500 text-center">Watch & interact in real-time</span>
+                <div className="space-y-0.5 text-center">
+                  <p className="text-[9px] text-zinc-600">No access code</p>
+                  <p className="text-[8px] text-zinc-600 truncate max-w-[100px]">dev@test.focuslinks.in</p>
+                </div>
               </button>
             </div>
             <div className="flex items-center gap-3 mt-4">
@@ -978,7 +1072,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
       </footer>
 
       {/* Join Room Modal */}
-      <JoinRoomModal key={joinModalOpen ? 'open' : 'closed'} open={joinModalOpen} onClose={() => { setJoinModalOpen(false); setDevAutoJoin(false); }} onSwitchToLogin={() => setLoginModalOpen(true)} devMode={devMode} autoJoin={devAutoJoin} />
+      <JoinRoomModal key={joinModalOpen ? 'open' : 'closed'} open={joinModalOpen} onClose={() => { setJoinModalOpen(false); setDevAutoJoin(false); }} onSwitchToLogin={() => setLoginModalOpen(true)} devMode={devMode} autoJoin={devAutoJoin} prefilledRoom={EVENT_ROOM_ID} prefilledHostPeer={`fm-${EVENT_ROOM_ID}-host`} />
 
       {/* Login Modal */}
       <LoginModal open={loginModalOpen} onClose={() => { setLoginModalOpen(false); setDevPrefilledEmail(''); setDevPrefilledAccessId(''); }} prefilledEmail={devPrefilledEmail} prefilledAccessId={devPrefilledAccessId} autoSignIn={!!(devPrefilledEmail && devPrefilledAccessId)} />

@@ -18,6 +18,9 @@ import { WaitingRoom } from './WaitingRoom';
 import { WaitingScreen } from './WaitingScreen';
 import { HostControls } from './HostControls';
 import { TreeHealthDashboard } from './TreeHealthDashboard';
+import { FakeUsersPanel } from './FakeUsersPanel';
+import { ImpersonatePanel } from './ImpersonatePanel';
+import { SlideUpload } from './SlideUpload';
 import {
   ChatMessage, SpeakerRequest, TreeNode, NodeStatus, StreamHealth,
   NetworkHealthSnapshot, SharedFile, Reaction, ReactionType,
@@ -28,7 +31,7 @@ import { toast } from 'sonner';
 import {
   Clock, WifiOff, AlertTriangle, Users, Shield, Copy, Check,
   Sun, Moon, ArrowLeft, Menu, X, ChevronDown, Monitor,
-  ChevronRight, UserCheck, MessageCircle,
+  ChevronRight, UserCheck, MessageCircle, Bot, Eye, Presentation, Sliders, Link2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -66,6 +69,8 @@ export function RoomPage() {
     slideChangeCallback, annotationCallback, setSlideChangeCallback, setAnnotationCallback,
     waitingRoom, addWaitingAttendee, removeWaitingAttendee,
     addHandRaise, removeHandRaise,
+    fakeUsers, hostAdminTab, setHostAdminTab,
+    impersonation, viewerInviteLink, setViewerInviteLink,
   } = useRoomStore();
 
   const workers = useWorkers();
@@ -77,15 +82,15 @@ export function RoomPage() {
   const [streamDuration, setStreamDuration] = useState(0);
   const durRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [copied, setCopied] = useState(false);
-  const [mobileDrawer, setMobileDrawer] = useState<'chat' | 'participants' | 'files' | 'waiting' | null>(null);
+  const [mobileDrawer, setMobileDrawer] = useState<'chat' | 'participants' | 'files' | 'waiting' | 'slides' | 'fakeusers' | 'impersonate' | 'health' | null>(null);
   const [gpuCapabilities] = useState<GPUCapabilities>(() => getGPUCapabilities());
   const [gpuMetrics, setGpuMetrics] = useState<GPUPerfMetrics | null>(null);
   const videoProcessorRef = useRef<VideoFrameProcessor | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionStep, setConnectionStep] = useState<string>('Initializing...');
   const [floatingReactions, setFloatingReactions] = useState<{ id: string; type: ReactionType; x: number }[]>([]);
-  const [isWaitingRoomPanelOpen, setIsWaitingRoomPanelOpen] = useState(true);
-  const [hostPanelTab, setHostPanelTab] = useState<'waiting' | 'participants' | 'chat' | 'health'>('waiting');
+  // hostAdminTab is now managed by the store (hostAdminTab)
+
 
   // Keep refs in sync with state (must be in useEffect to avoid render-time ref access)
   useEffect(() => {
@@ -385,12 +390,23 @@ export function RoomPage() {
   };
 
   const copyInviteUrl = () => {
+    // Generate a viewer-specific invite link (not the host URL)
+    const roomId = roomInfo?.roomId || '';
+    const hostPeer = roomInfo?.hostPeerId || '';
+    const viewerLink = `${window.location.origin}${window.location.pathname}#join=true&room=${roomId}&hostPeer=${hostPeer}`;
+    setViewerInviteLink(viewerLink);
+    navigator.clipboard.writeText(viewerLink).then(() => {
+      setCopied(true);
+      toast.success('Viewer invite link copied!', { description: 'Share this link for viewers to join' });
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const copyHostLink = () => {
     const hash = window.location.hash;
     const url = `${window.location.origin}${hash}`;
     navigator.clipboard.writeText(url).then(() => {
-      setCopied(true);
-      toast.success('Invite link copied!');
-      setTimeout(() => setCopied(false), 2000);
+      toast.success('Host link copied!', { description: 'Only share with co-hosts' });
     });
   };
 
@@ -533,7 +549,7 @@ export function RoomPage() {
                 variant="ghost"
                 size="sm"
                 className="h-6 px-1.5 text-[9px] sm:text-[10px] gap-0.5 text-amber-400 bg-amber-500/10 hover:bg-amber-500/20"
-                onClick={() => setHostPanelTab('waiting')}
+                onClick={() => setHostAdminTab('waiting')}
               >
                 <Users className="w-3 h-3" />
                 <span className="hidden sm:inline">Waiting</span>
@@ -581,8 +597,9 @@ export function RoomPage() {
               size="sm"
               className="h-6 px-1.5 text-[9px] sm:text-[10px] text-zinc-400 hover:text-zinc-200 gap-0.5"
               onClick={copyInviteUrl}
+              title="Copy viewer invite link"
             >
-              {copied ? <Check className="w-3 h-3 text-blue-400" /> : <Copy className="w-3 h-3" />}
+              {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Link2 className="w-3 h-3" />}
               <span className="hidden sm:inline">Invite</span>
             </Button>
 
@@ -626,41 +643,68 @@ export function RoomPage() {
           {/* Right side panel: Admin panel with tabs */}
           <div className="hidden sm:flex flex-col w-80 border-l border-zinc-800 bg-zinc-900/50 flex-shrink-0 overflow-hidden">
             {/* Tab bar */}
-            <div className="flex border-b border-zinc-800 flex-shrink-0">
+            <div className="flex border-b border-zinc-800 flex-shrink-0 overflow-x-auto scrollbar-none">
               <HostTabButton
                 label="Waiting"
                 icon={<Users className="w-3.5 h-3.5" />}
-                active={hostPanelTab === 'waiting'}
+                active={hostAdminTab === 'waiting'}
                 badge={waitingRoom.length > 0 ? waitingRoom.length : undefined}
                 badgeClass="bg-amber-500/20 text-amber-400"
-                onClick={() => setHostPanelTab('waiting')}
+                onClick={() => setHostAdminTab('waiting')}
               />
               <HostTabButton
                 label="People"
                 icon={<Users className="w-3.5 h-3.5" />}
-                active={hostPanelTab === 'participants'}
+                active={hostAdminTab === 'participants'}
                 badge={nodes.size > 1 ? nodes.size - 1 : undefined}
-                onClick={() => setHostPanelTab('participants')}
+                onClick={() => setHostAdminTab('participants')}
               />
               <HostTabButton
                 label="Chat"
                 icon={<MessageCircle className="w-3.5 h-3.5" />}
-                active={hostPanelTab === 'chat'}
-                onClick={() => setHostPanelTab('chat')}
+                active={hostAdminTab === 'chat'}
+                onClick={() => setHostAdminTab('chat')}
+              />
+              <HostTabButton
+                label="Slides"
+                icon={<Sliders className="w-3.5 h-3.5" />}
+                active={hostAdminTab === 'slides'}
+                badge={slides.length > 0 ? slides.length : undefined}
+                badgeClass="bg-emerald-500/20 text-emerald-400"
+                onClick={() => setHostAdminTab('slides')}
               />
               <HostTabButton
                 label="Health"
                 icon={<Shield className="w-3.5 h-3.5" />}
-                active={hostPanelTab === 'health'}
-                onClick={() => setHostPanelTab('health')}
+                active={hostAdminTab === 'health'}
+                onClick={() => setHostAdminTab('health')}
+              />
+              <HostTabButton
+                label="Bots"
+                icon={<Bot className="w-3.5 h-3.5" />}
+                active={hostAdminTab === 'fakeusers'}
+                badge={fakeUsers.length > 0 ? fakeUsers.length : undefined}
+                badgeClass="bg-violet-500/20 text-violet-400"
+                onClick={() => setHostAdminTab('fakeusers')}
+              />
+              <HostTabButton
+                label="As"
+                icon={<Eye className="w-3.5 h-3.5" />}
+                active={hostAdminTab === 'impersonate'}
+                badge={impersonation.isImpersonating ? 1 : undefined}
+                badgeClass="bg-amber-500/20 text-amber-400"
+                onClick={() => setHostAdminTab('impersonate')}
               />
             </div>
             {/* Tab content */}
             <div className="flex-1 overflow-y-auto custom-scrollbar">
-              {hostPanelTab === 'waiting' && <WaitingRoom />}
-              {hostPanelTab === 'participants' && <ParticipantList />}
-              {hostPanelTab === 'chat' && <ChatPanel standalone />}
-              {hostPanelTab === 'health' && <TreeHealthDashboard />}
+              {hostAdminTab === 'waiting' && <WaitingRoom />}
+              {hostAdminTab === 'participants' && <ParticipantList />}
+              {hostAdminTab === 'chat' && <ChatPanel standalone />}
+              {hostAdminTab === 'slides' && <SlideUpload />}
+              {hostAdminTab === 'health' && <TreeHealthDashboard />}
+              {hostAdminTab === 'fakeusers' && <FakeUsersPanel />}
+              {hostAdminTab === 'impersonate' && <ImpersonatePanel />}
             </div>
           </div>
         </div>
@@ -694,6 +738,10 @@ export function RoomPage() {
                   {mobileDrawer === 'participants' && <ParticipantList />}
                   {mobileDrawer === 'files' && <FileSharingPanel />}
                   {mobileDrawer === 'waiting' && <WaitingRoom />}
+                  {mobileDrawer === 'slides' && <SlideUpload />}
+                  {mobileDrawer === 'health' && <TreeHealthDashboard />}
+                  {mobileDrawer === 'fakeusers' && <FakeUsersPanel />}
+                  {mobileDrawer === 'impersonate' && <ImpersonatePanel />}
                 </div>
               </motion.div>
             </>
@@ -702,7 +750,7 @@ export function RoomPage() {
 
         {/* Controls */}
         <Controls
-          onMobileDrawerOpen={(type) => setMobileDrawer(type as 'chat' | 'participants' | 'files' | 'waiting' | null)}
+          onMobileDrawerOpen={(type) => setMobileDrawer(type as any)}
           mobileDrawerOpen={!!mobileDrawer}
         />
 
@@ -809,8 +857,9 @@ export function RoomPage() {
             size="sm"
             className="h-6 px-1.5 text-[9px] sm:text-[10px] text-zinc-400 hover:text-zinc-200 gap-0.5"
             onClick={copyInviteUrl}
+            title="Copy invite link"
           >
-            {copied ? <Check className="w-3 h-3 text-blue-400" /> : <Copy className="w-3 h-3" />}
+            {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Link2 className="w-3 h-3" />}
             <span className="hidden sm:inline">Invite</span>
           </Button>
 

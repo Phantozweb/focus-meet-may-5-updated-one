@@ -5077,6 +5077,297 @@ export class FractalMeshEngine {
     return this.scheduler.getMetrics();
   }
 
+  // ============ PUBLIC API: FAKE USERS ============
+
+  /**
+   * Create a fake user that joins the webinar as a virtual participant.
+   * The fake user appears in the participant list and can auto-chat/react based on persona.
+   * This is a HOST-ONLY feature — fake users are simulated locally on the host's browser.
+   */
+  createFakeUser(displayName: string, persona: string): string | null {
+    if (!this.myNode || !this.roomInfo || this.myNode.role !== 'host') return null;
+
+    const fakePeerId = `fake-${this.roomInfo.roomId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const fakeId = `fu-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    // Create a fake TreeNode
+    const fakeNode = this.createNode(
+      fakePeerId,
+      displayName,
+      'viewer',
+      'leaf',
+      this.myNode.peerId,
+      1,
+      this.myNode.clusterId,
+    );
+    fakeNode.status = 'connected';
+    fakeNode.connectedAt = Date.now();
+    fakeNode.device = {
+      deviceType: 'desktop',
+      screenResolution: { width: 1920, height: 1080 },
+      cpuCores: 4, memoryGB: 4, isMobile: false,
+      networkType: 'wifi', downlinkMbps: 10, rttMs: 50, saveData: false,
+    };
+    (fakeNode as any)._fakeId = fakeId;
+
+    this.nodes.set(fakePeerId, fakeNode);
+    this.myNode.childrenIds.push(fakePeerId);
+    this.myNode.currentRelayLoad++;
+
+    // Update room info
+    this.roomInfo.totalParticipants = this.nodes.size;
+    this.roomInfo.totalJoins++;
+    this.roomInfo.peakParticipants = Math.max(this.roomInfo.peakParticipants, this.nodes.size);
+
+    // Broadcast participant update to all real children
+    this.broadcastParticipantUpdate();
+    this.broadcastTreeUpdate();
+
+    // Add a system chat message about the fake user joining
+    if (this.onChatMessage) {
+      this.onChatMessage({
+        id: `sys-fake-${Date.now()}`,
+        senderId: 'system',
+        senderName: 'System',
+        content: `${displayName} joined the webinar`,
+        timestamp: Date.now(),
+        type: 'system',
+      });
+    }
+
+    // Broadcast chat message to all children
+    this.broadcastToChildren({
+      type: 'chat-broadcast',
+      payload: {
+        id: `sys-fake-${Date.now()}`,
+        senderId: 'system',
+        senderName: 'System',
+        content: `${displayName} joined the webinar`,
+        timestamp: Date.now(),
+        type: 'system',
+      },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+
+    this.saveToStorage();
+    return fakeId; // Return the fake user ID (not peer ID) for tracking
+  }
+
+  /**
+   * Remove a fake user from the webinar.
+   */
+  removeFakeUser(fakePeerId: string): void {
+    if (!this.myNode || !this.roomInfo) return;
+
+    const fakeNode = this.nodes.get(fakePeerId);
+    if (!fakeNode) return;
+
+    // Remove from parent's children list
+    if (fakeNode.parentId) {
+      const parent = this.nodes.get(fakeNode.parentId);
+      if (parent) {
+        parent.childrenIds = parent.childrenIds.filter(id => id !== fakePeerId);
+        parent.currentRelayLoad = Math.max(0, parent.currentRelayLoad - 1);
+      }
+    }
+
+    const displayName = fakeNode.displayName;
+    this.nodes.delete(fakePeerId);
+
+    // Update room info
+    this.roomInfo.totalParticipants = this.nodes.size;
+    this.roomInfo.totalLeaves++;
+
+    // Broadcast participant update
+    this.broadcastParticipantUpdate();
+    this.broadcastTreeUpdate();
+
+    // System message about leaving
+    if (this.onChatMessage) {
+      this.onChatMessage({
+        id: `sys-fake-leave-${Date.now()}`,
+        senderId: 'system',
+        senderName: 'System',
+        content: `${displayName} left the webinar`,
+        timestamp: Date.now(),
+        type: 'system',
+      });
+    }
+
+    this.broadcastToChildren({
+      type: 'chat-broadcast',
+      payload: {
+        id: `sys-fake-leave-${Date.now()}`,
+        senderId: 'system',
+        senderName: 'System',
+        content: `${displayName} left the webinar`,
+        timestamp: Date.now(),
+        type: 'system',
+      },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+
+    this.saveToStorage();
+  }
+
+  /**
+   * Send a chat message on behalf of a fake user.
+   * The message appears to come from the fake user to all participants.
+   */
+  sendFakeChatMessage(fakePeerId: string, content: string): void {
+    if (!this.myNode || !this.roomInfo) return;
+    const fakeNode = this.nodes.get(fakePeerId);
+    if (!fakeNode) return;
+
+    const msg: ChatMessage = {
+      id: `chat-fake-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      senderId: fakePeerId,
+      senderName: fakeNode.displayName,
+      content,
+      timestamp: Date.now(),
+      type: 'chat',
+    };
+
+    // Add locally
+    if (this.onChatMessage) this.onChatMessage(msg);
+
+    // Broadcast to all children through the tree
+    this.broadcastToChildren({
+      type: 'chat-broadcast',
+      payload: msg,
+      senderId: fakePeerId,
+      senderName: fakeNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * Send a reaction on behalf of a fake user.
+   */
+  sendFakeReaction(fakePeerId: string, reactionType: ReactionType): void {
+    if (!this.myNode || !this.roomInfo) return;
+    const fakeNode = this.nodes.get(fakePeerId);
+    if (!fakeNode) return;
+
+    const reaction: Reaction = {
+      id: `react-fake-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      type: reactionType,
+      senderId: fakePeerId,
+      senderName: fakeNode.displayName,
+      timestamp: Date.now(),
+    };
+
+    // Add locally
+    if (this.onReaction) this.onReaction(reaction);
+
+    // Broadcast to all children
+    this.broadcastToChildren({
+      type: 'reaction',
+      payload: reaction,
+      senderId: fakePeerId,
+      senderName: fakeNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * Send a chat message impersonating a real user.
+   * Host can chat on behalf of any participant.
+   */
+  sendImpersonatedChat(targetPeerId: string, content: string): void {
+    if (!this.myNode || !this.roomInfo) return;
+    const targetNode = this.nodes.get(targetPeerId);
+    if (!targetNode) return;
+
+    const msg: ChatMessage = {
+      id: `chat-imp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      senderId: targetPeerId,
+      senderName: targetNode.displayName,
+      content,
+      timestamp: Date.now(),
+      type: 'chat',
+    };
+
+    // Add locally
+    if (this.onChatMessage) this.onChatMessage(msg);
+
+    // Broadcast to all children
+    this.broadcastToChildren({
+      type: 'chat-broadcast',
+      payload: msg,
+      senderId: targetPeerId,
+      senderName: targetNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * Raise/lower hand on behalf of a user (impersonation).
+   */
+  impersonateHandRaise(targetPeerId: string, isRaised: boolean): void {
+    if (!this.myNode || !this.roomInfo) return;
+    const targetNode = this.nodes.get(targetPeerId);
+    if (!targetNode) return;
+
+    if (this.onHandRaiseUpdate) {
+      this.onHandRaiseUpdate({
+        peerId: targetPeerId,
+        displayName: targetNode.displayName,
+        isRaised,
+      });
+    }
+
+    // Broadcast to all children
+    this.broadcastToChildren({
+      type: isRaised ? 'hand-raise' : 'hand-lower',
+      payload: { peerId: targetPeerId, displayName: targetNode.displayName, isRaised },
+      senderId: targetPeerId,
+      senderName: targetNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * Send a reaction on behalf of a real user (impersonation).
+   */
+  sendImpersonatedReaction(targetPeerId: string, reactionType: ReactionType): void {
+    this.sendFakeReaction(targetPeerId, reactionType); // Same mechanism
+  }
+
+  /**
+   * Get the fake user's peer ID from their fake ID.
+   * Since fake users are stored in the nodes map, we can look them up by display name prefix.
+   */
+  getFakeUserPeerId(fakeId: string): string | null {
+    for (const [peerId, node] of this.nodes) {
+      if (peerId.startsWith('fake-') && (node as any)._fakeId === fakeId) {
+        return peerId;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get all fake user peer IDs (those starting with "fake-").
+   */
+  getFakeUserPeerIds(): string[] {
+    const ids: string[] = [];
+    for (const [peerId] of this.nodes) {
+      if (peerId.startsWith('fake-')) ids.push(peerId);
+    }
+    return ids;
+  }
+
   // ============ CLEANUP ============
 
   destroy() {

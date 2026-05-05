@@ -6,6 +6,7 @@ import {
   NodeStatus, StreamHealth, StreamQuality, DeviceCapability, BandwidthProbe,
   NetworkHealthSnapshot, BenchmarkResult, SharedFile, Reaction, ReactionType,
   ScreenShareState, ViewMode, HandRaise, WaitingAttendee, ModerationAction, RoomLock,
+  FakeUser, ImpersonationState,
 } from '@/lib/types';
 import { FractalMeshEngine } from '@/lib/peer-tree';
 import { GitHubClipRecorder, RecordingState } from '@/lib/github-recorder';
@@ -92,6 +93,36 @@ interface RoomState {
   // Callbacks
   slideChangeCallback: ((slideIndex: number) => void) | null;
   annotationCallback: ((annotation: { type: string; x: number; y: number; data?: any }) => void) | null;
+
+  // Fake users
+  fakeUsers: FakeUser[];
+  isFakeUserPanelOpen: boolean;
+  
+  // Impersonation
+  impersonation: ImpersonationState;
+  
+  // Host admin
+  hostAdminTab: string;
+  
+  // Invite link
+  viewerInviteLink: string;
+
+  // Setters for fake users
+  addFakeUser: (u: FakeUser) => void;
+  removeFakeUser: (id: string) => void;
+  updateFakeUser: (id: string, updates: Partial<FakeUser>) => void;
+  setFakeUserPanelOpen: (v: boolean) => void;
+  
+  // Impersonation setters
+  setImpersonation: (s: ImpersonationState) => void;
+  startImpersonation: (peerId: string, displayName: string, mode: 'chat' | 'react' | 'hand') => void;
+  stopImpersonation: () => void;
+  
+  // Host admin setters
+  setHostAdminTab: (tab: string) => void;
+  
+  // Invite link
+  setViewerInviteLink: (link: string) => void;
 
   // Setters
   setEngine: (e: FractalMeshEngine) => void;
@@ -213,6 +244,11 @@ const init = {
   isRoomLocked: false,
   slideChangeCallback: null as ((slideIndex: number) => void) | null,
   annotationCallback: null as ((annotation: { type: string; x: number; y: number; data?: any }) => void) | null,
+  fakeUsers: [] as FakeUser[],
+  isFakeUserPanelOpen: false,
+  impersonation: { isImpersonating: false, targetPeerId: null, targetDisplayName: null, mode: null } as ImpersonationState,
+  hostAdminTab: 'waiting',
+  viewerInviteLink: '',
 };
 
 export const useRoomStore = create<RoomState>((set, get) => ({
@@ -338,6 +374,29 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   // Callbacks
   setSlideChangeCallback: (slideChangeCallback) => set({ slideChangeCallback }),
   setAnnotationCallback: (annotationCallback) => set({ annotationCallback }),
+
+  // Fake users
+  addFakeUser: (u) => set((s) => ({ fakeUsers: [...s.fakeUsers, u] })),
+  removeFakeUser: (id) => set((s) => ({ fakeUsers: s.fakeUsers.filter(f => f.id !== id) })),
+  updateFakeUser: (id, updates) => set((s) => ({
+    fakeUsers: s.fakeUsers.map(f => f.id === id ? { ...f, ...updates } : f),
+  })),
+  setFakeUserPanelOpen: (isFakeUserPanelOpen) => set({ isFakeUserPanelOpen }),
+  
+  // Impersonation
+  setImpersonation: (impersonation) => set({ impersonation }),
+  startImpersonation: (peerId, displayName, mode) => set({
+    impersonation: { isImpersonating: true, targetPeerId: peerId, targetDisplayName: displayName, mode },
+  }),
+  stopImpersonation: () => set({
+    impersonation: { isImpersonating: false, targetPeerId: null, targetDisplayName: null, mode: null },
+  }),
+  
+  // Host admin
+  setHostAdminTab: (hostAdminTab) => set({ hostAdminTab }),
+  
+  // Invite link
+  setViewerInviteLink: (viewerInviteLink) => set({ viewerInviteLink }),
 
   reset: () => {
     const { engine, recorder } = get();
