@@ -22,7 +22,7 @@ import {
 import { useState } from 'react';
 import { toast } from 'sonner';
 
-export function ParticipantList() {
+export function ParticipantList({ standalone = false }: { standalone?: boolean } = {}) {
   const {
     nodes, myNode, speakerRequests, engine, removeSpeakerRequest,
     isParticipantsOpen, setParticipantsOpen, isHost, isCoHost, handRaises,
@@ -84,13 +84,22 @@ export function ParticipantList() {
     }
   };
 
+  const handleApproveSpeaker = (peerId: string) => {
+    if (engine) {
+      engine.approveSpeaker(peerId);
+      removeSpeakerRequest(peerId);
+      useRoomStore.getState().removeHandRaise(peerId);
+      toast.success('Approved to speak');
+    }
+  };
+
   const isHandRaised = (peerId: string) =>
     handRaises.some(h => h.peerId === peerId && h.isRaised);
 
-  if (!isParticipantsOpen) return null;
+  if (!standalone && !isParticipantsOpen) return null;
 
   return (
-    <div className="w-full sm:w-80 border-l border-zinc-800 bg-zinc-950 flex flex-col h-full">
+    <div className={`w-full bg-zinc-950 flex flex-col h-full ${standalone ? '' : 'sm:w-80 border-l border-zinc-800'}`}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
         <div className="flex items-center gap-2">
@@ -185,6 +194,7 @@ export function ParticipantList() {
                   onDemoteCoHost={handleDemoteCoHost}
                   onMute={handleMute}
                   onRemove={setRemoveTarget}
+                  onApproveSpeaker={handleApproveSpeaker}
                   onLowerHand={handleLowerHand}
                 />
               ))}
@@ -206,6 +216,7 @@ export function ParticipantList() {
                   onDemoteCoHost={handleDemoteCoHost}
                   onMute={handleMute}
                   onRemove={setRemoveTarget}
+                  onApproveSpeaker={handleApproveSpeaker}
                   onLowerHand={handleLowerHand}
                 />
               ))}
@@ -227,6 +238,7 @@ export function ParticipantList() {
                   onDemoteCoHost={handleDemoteCoHost}
                   onMute={handleMute}
                   onRemove={setRemoveTarget}
+                  onApproveSpeaker={handleApproveSpeaker}
                   onLowerHand={handleLowerHand}
                 />
               ))}
@@ -248,6 +260,7 @@ export function ParticipantList() {
                   onDemoteCoHost={handleDemoteCoHost}
                   onMute={handleMute}
                   onRemove={setRemoveTarget}
+                  onApproveSpeaker={handleApproveSpeaker}
                   onLowerHand={handleLowerHand}
                 />
               ))}
@@ -327,12 +340,13 @@ interface ParticipantRowProps {
   onDemoteCoHost: (peerId: string) => void;
   onMute: (peerId: string) => void;
   onRemove: (target: { peerId: string; name: string }) => void;
+  onApproveSpeaker: (peerId: string) => void;
   onLowerHand: (peerId: string) => void;
 }
 
 function ParticipantRow({
   node, isOwn, canModerate, isHostUser, isHandRaised,
-  onPromoteCoHost, onDemoteCoHost, onMute, onRemove, onLowerHand,
+  onPromoteCoHost, onDemoteCoHost, onMute, onRemove, onApproveSpeaker, onLowerHand,
 }: ParticipantRowProps) {
   // Connection quality dot
   const rtt = node.bandwidth?.rttMs ?? 999;
@@ -373,9 +387,22 @@ function ParticipantRow({
         {isOwn && ' (You)'}
       </span>
 
-      {/* Hand raise indicator */}
+      {/* Hand raise indicator + Approve button */}
       {isHandRaised && (
-        <Hand className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+        <>
+          <Hand className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+          {canModerate && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+              onClick={() => onApproveSpeaker(node.peerId)}
+              title="Approve to speak"
+            >
+              <Check className="w-3.5 h-3.5" />
+            </Button>
+          )}
+        </>
       )}
 
       <div className="flex items-center gap-1 flex-shrink-0">
@@ -440,6 +467,17 @@ function ParticipantRow({
                 >
                   <Hand className="w-3.5 h-3.5 mr-2 text-amber-400" />
                   Lower Hand
+                </DropdownMenuItem>
+              )}
+
+              {/* Approve to Speak (only if hand is raised) */}
+              {isHandRaised && canModerate && (
+                <DropdownMenuItem
+                  className="text-emerald-400 focus:text-emerald-300 focus:bg-emerald-500/10 text-xs"
+                  onClick={() => onApproveSpeaker(node.peerId)}
+                >
+                  <Check className="w-3.5 h-3.5 mr-2" />
+                  Approve to Speak
                 </DropdownMenuItem>
               )}
 

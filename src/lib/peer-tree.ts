@@ -2271,6 +2271,8 @@ export class FractalMeshEngine {
       this.nodes.forEach((node) => {
         if (node.peerId === this.myNode!.peerId) return;
         if (node.status !== 'connected') return;
+        // Skip fake users — they don't send heartbeats but should stay
+        if (node.peerId.startsWith('fake-')) return;
 
         if (now - node.lastHeartbeat > HEARTBEAT_TIMEOUT) {
           node.missedHeartbeats++;
@@ -2561,25 +2563,27 @@ export class FractalMeshEngine {
           // Reassign children
           for (const childId of [...node.childrenIds]) {
             const child = this.nodes.get(childId);
-            if (child) {
-              const newParent = this.selectBestRelay(child.device);
-              if (newParent && newParent.peerId !== node.peerId) {
-                child.parentId = newParent.peerId;
-                child.depth = newParent.depth + 1;
-                newParent.childrenIds.push(childId);
-                newParent.currentRelayLoad = newParent.childrenIds.length;
-                this.nodes.set(newParent.peerId, newParent);
-                this.nodes.set(childId, child);
+            if (!child) continue;
+            // Skip fake users — they don't have real P2P connections
+            if (child.peerId.startsWith('fake-')) continue;
 
-                const childConn = this.childConnections.get(childId);
-                if (childConn) {
-                  this.sendSignal(childConn, {
-                    type: 'reassign-parent',
-                    payload: { newParentId: newParent.peerId },
-                    senderId: this.myNode!.peerId, senderName: this.myNode!.displayName,
-                    roomId: this.roomInfo!.roomId, timestamp: Date.now(),
-                  });
-                }
+            const newParent = this.selectBestRelay(child.device);
+            if (newParent && newParent.peerId !== node.peerId) {
+              child.parentId = newParent.peerId;
+              child.depth = newParent.depth + 1;
+              newParent.childrenIds.push(childId);
+              newParent.currentRelayLoad = newParent.childrenIds.length;
+              this.nodes.set(newParent.peerId, newParent);
+              this.nodes.set(childId, child);
+
+              const childConn = this.childConnections.get(childId);
+              if (childConn) {
+                this.sendSignal(childConn, {
+                  type: 'reassign-parent',
+                  payload: { newParentId: newParent.peerId },
+                  senderId: this.myNode!.peerId, senderName: this.myNode!.displayName,
+                  roomId: this.roomInfo!.roomId, timestamp: Date.now(),
+                });
               }
             }
           }
@@ -2627,6 +2631,8 @@ export class FractalMeshEngine {
         const childId = over.childrenIds[over.childrenIds.length - 1];
         const child = this.nodes.get(childId);
         if (!child) continue;
+        // Skip fake users — they don't have real P2P connections
+        if (child.peerId.startsWith('fake-')) continue;
 
         // Find best underloaded relay for this child
         const bestTarget = underloaded.sort((a, b) =>
@@ -3189,6 +3195,10 @@ export class FractalMeshEngine {
   private handleReaction(msg: SignalMessage) {
     const reaction = msg.payload as Reaction;
     if (this.onReaction) this.onReaction(reaction);
+    // Forward to parent if we're not the host (so reactions propagate up the tree)
+    if (this.parentConnection && this.myNode?.role !== 'host') {
+      this.sendSignal(this.parentConnection, msg);
+    }
     // Forward to children through tree
     this.broadcastToChildren(msg);
   }
@@ -3695,7 +3705,7 @@ export class FractalMeshEngine {
     if (!this.myNode || !this.roomInfo) return;
 
     const now = Date.now();
-    if (now - this.lastReactionTime < 2000) return; // 2s throttle
+    if (now - this.lastReactionTime < 800) return; // 800ms throttle
     this.lastReactionTime = now;
 
     const reaction: Reaction = {
@@ -3983,13 +3993,6 @@ export class FractalMeshEngine {
   private handleHandRaiseSignal(msg: SignalMessage) {
     // Forward to host if we're a relay; process if we're host
     if (this.myNode?.role === 'host' || this.myNode?.isRoot) {
-      if (this.onSpeakerRequest) {
-        this.onSpeakerRequest({
-          peerId: msg.senderId,
-          displayName: msg.senderName,
-          timestamp: msg.timestamp,
-        });
-      }
       if (this.onHandRaiseUpdate) {
         this.onHandRaiseUpdate({ peerId: msg.senderId, displayName: msg.senderName, isRaised: true });
       }
@@ -4003,13 +4006,6 @@ export class FractalMeshEngine {
 
   private handleHandLowerSignal(msg: SignalMessage) {
     if (this.myNode?.role === 'host' || this.myNode?.isRoot) {
-      if (this.onSpeakerRequest) {
-        this.onSpeakerRequest({
-          peerId: msg.senderId,
-          displayName: msg.senderName,
-          timestamp: msg.timestamp,
-        });
-      }
       if (this.onHandRaiseUpdate) {
         this.onHandRaiseUpdate({ peerId: msg.senderId, displayName: msg.senderName, isRaised: false });
       }

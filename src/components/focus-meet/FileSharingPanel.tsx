@@ -16,7 +16,7 @@ import { toast } from 'sonner';
 // Max file size for data-URL embedding (1MB)
 const EMBED_MAX_SIZE = 1024 * 1024;
 
-export function FileSharingPanel() {
+export function FileSharingPanel({ standalone = false }: { standalone?: boolean } = {}) {
   const { sharedFiles, isFilesOpen, setFilesOpen, myNode, addSharedFile, updateSharedFile, engine } = useRoomStore();
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -152,10 +152,10 @@ export function FileSharingPanel() {
     setTimeout(() => clearInterval(checkInterval), 30000);
   }, [engine, updateSharedFile]);
 
-  if (!isFilesOpen) return null;
+  if (!standalone && !isFilesOpen) return null;
 
   return (
-    <div className="w-full sm:w-80 border-l border-zinc-800 bg-zinc-950 flex flex-col h-full">
+    <div className={`w-full bg-zinc-950 flex flex-col h-full ${standalone ? '' : 'sm:w-80 border-l border-zinc-800'}`}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
         <div className="flex items-center gap-2">

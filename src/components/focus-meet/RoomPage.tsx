@@ -32,6 +32,7 @@ import {
   Clock, WifiOff, AlertTriangle, Users, Shield, Copy, Check,
   Sun, Moon, ArrowLeft, Menu, X, ChevronDown, Monitor,
   ChevronRight, UserCheck, MessageCircle, Bot, Eye, Presentation, Sliders, Link2,
+  Hand,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -68,7 +69,7 @@ export function RoomPage() {
     isRoomLocked, setIsRoomLocked,
     slideChangeCallback, annotationCallback, setSlideChangeCallback, setAnnotationCallback,
     waitingRoom, addWaitingAttendee, removeWaitingAttendee,
-    addHandRaise, removeHandRaise,
+    handRaises, addHandRaise, removeHandRaise,
     fakeUsers, hostAdminTab, setHostAdminTab,
     impersonation, viewerInviteLink, setViewerInviteLink,
   } = useRoomStore();
@@ -81,6 +82,17 @@ export function RoomPage() {
   const waitingRoomRef = useRef<WaitingAttendee[]>([]);
   const prevStatusRef = useRef<NodeStatus | null>(null);
   const shownHandRaisesRef = useRef<Set<string>>(new Set());
+  const lastToastTimeRef = useRef<Record<string, number>>({});
+
+  // Debounced toast helper — only shows toast if enough time has passed since the last identical toast
+  const debouncedToast = (key: string, toastFn: () => void, cooldownMs = 5000) => {
+    const now = Date.now();
+    const lastTime = lastToastTimeRef.current[key] || 0;
+    if (now - lastTime >= cooldownMs) {
+      lastToastTimeRef.current[key] = now;
+      toastFn();
+    }
+  };
   const [streamDuration, setStreamDuration] = useState(0);
   const durRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [copied, setCopied] = useState(false);
@@ -91,6 +103,8 @@ export function RoomPage() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionStep, setConnectionStep] = useState<string>('Initializing...');
   const [floatingReactions, setFloatingReactions] = useState<{ id: string; type: ReactionType; x: number }[]>([]);
+  const [adminPanelOpen, setAdminPanelOpen] = useState(true);
+  const [viewerShowGrid, setViewerShowGrid] = useState(false);
   // hostAdminTab is now managed by the store (hostAdminTab)
 
 
@@ -219,16 +233,20 @@ export function RoomPage() {
         const prevStatus = prevStatusRef.current;
         prevStatusRef.current = status;
         if (status === prevStatus) return; // Skip duplicate status
-        if (status === 'reconnecting') toast('Reconnecting...', { duration: 3000 });
+        if (status === 'reconnecting') {
+          debouncedToast('reconnecting', () => toast('Reconnecting...', { duration: 3000 }));
+        }
         else if (status === 'connected') {
-          toast.success('Connected!');
-          // Detect waiting room admission: if viewer was waiting and now connected, admit them
+          // Only show the "admitted" toast for viewers who were in the waiting room;
+          // skip the generic "Connected!" toast since the UI already shows connection status
           if (!host && useRoomStore.getState().waitingForAdmission) {
             setWaitingForAdmission(false);
             toast.success("You've been admitted to the room!");
           }
         }
-        else if (status === 'error') toast.error('Connection failed');
+        else if (status === 'error') {
+          debouncedToast('connection-error', () => toast.error('Connection failed'));
+        }
       });
       eng.setOnError((e: string) => {
         toast.error(e);
@@ -238,7 +256,7 @@ export function RoomPage() {
       });
       eng.setOnStreamHealth((h: StreamHealth) => { setStreamHealth(h); setStreamQuality(h.quality); });
       eng.setOnClusterUpdate((clusters) => setClusters(clusters));
-      eng.setOnNetworkHealth((snapshot: NetworkHealthSnapshot) => addNetworkHistory(snapshot));
+      eng.setOnNetworkHealth((_snapshot: NetworkHealthSnapshot) => { addNetworkHistory(_snapshot); });
       eng.setOnFileShared((file: SharedFile) => addSharedFile(file));
       eng.setOnFileChunk((fileId, chunkIndex, totalChunks, _data) => {
         updateSharedFile(fileId, { transferredChunks: chunkIndex + 1, chunks: totalChunks });
@@ -606,6 +624,18 @@ export function RoomPage() {
             {/* Host Controls dropdown */}
             <HostControls />
 
+            {/* Admin panel toggle (desktop only) */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-1.5 text-[9px] sm:text-[10px] text-zinc-400 hover:text-zinc-200 gap-0.5"
+              onClick={() => setAdminPanelOpen(!adminPanelOpen)}
+              title={adminPanelOpen ? 'Close panel' : 'Open panel'}
+            >
+              {adminPanelOpen ? <X className="w-3 h-3" /> : <Sliders className="w-3 h-3" />}
+              <span className="hidden sm:inline">{adminPanelOpen ? 'Close' : 'Panel'}</span>
+            </Button>
+
             {/* Copy invite */}
             <Button
               variant="ghost"
@@ -642,6 +672,29 @@ export function RoomPage() {
           </div>
         )}
 
+        {/* Hand raise notification bar */}
+        {handRaises.filter(h => h.isRaised).length > 0 && (
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border-b border-amber-500/20 flex-shrink-0 overflow-x-auto scrollbar-none">
+            <Hand className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+            <span className="text-amber-300 text-xs font-medium flex-shrink-0">Raised hands:</span>
+            {handRaises.filter(h => h.isRaised).map(h => (
+              <div key={h.peerId} className="flex items-center gap-1.5 bg-amber-500/15 rounded-full px-2 py-0.5 flex-shrink-0">
+                <span className="text-amber-200 text-[10px] font-medium">{h.displayName}</span>
+                <button
+                  onClick={() => {
+                    engine?.approveSpeaker(h.peerId);
+                    removeHandRaise(h.peerId);
+                    toast.success(`Approved ${h.displayName} to speak`);
+                  }}
+                  className="text-[9px] font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 px-1.5 py-0.5 rounded-full transition-colors"
+                >
+                  Approve
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Host main content area */}
         <div className="flex-1 flex overflow-hidden">
           {/* Left: PresenterView or VideoGrid/SlidePresentation */}
@@ -655,7 +708,8 @@ export function RoomPage() {
             )}
           </div>
 
-          {/* Right side panel: Admin panel with tabs */}
+          {/* Right side panel: Admin panel with tabs (toggleable) */}
+          {adminPanelOpen && (
           <div className="hidden sm:flex flex-col w-80 border-l border-zinc-800 bg-zinc-900/50 flex-shrink-0 overflow-hidden">
             {/* Tab bar */}
             <div className="flex border-b border-zinc-800 flex-shrink-0 overflow-x-auto scrollbar-none">
@@ -714,7 +768,7 @@ export function RoomPage() {
             {/* Tab content */}
             <div className="flex-1 overflow-y-auto custom-scrollbar">
               {hostAdminTab === 'waiting' && <WaitingRoom />}
-              {hostAdminTab === 'participants' && <ParticipantList />}
+              {hostAdminTab === 'participants' && <ParticipantList standalone />}
               {hostAdminTab === 'chat' && <ChatPanel standalone />}
               {hostAdminTab === 'slides' && <SlideUpload />}
               {hostAdminTab === 'health' && <TreeHealthDashboard />}
@@ -722,6 +776,7 @@ export function RoomPage() {
               {hostAdminTab === 'impersonate' && <ImpersonatePanel />}
             </div>
           </div>
+          )}
         </div>
 
         {/* Mobile drawer (bottom sheet) */}
@@ -742,15 +797,41 @@ export function RoomPage() {
                 transition={{ type: 'spring', damping: 25, stiffness: 300 }}
                 className="fixed bottom-0 left-0 right-0 z-40 sm:hidden bg-zinc-900 border-t border-zinc-700 rounded-t-2xl max-h-[70vh] overflow-hidden"
               >
-                <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-                  <span className="text-sm font-semibold text-zinc-200 capitalize">{mobileDrawer}</span>
-                  <button onClick={() => setMobileDrawer(null)} className="p-1 rounded-lg hover:bg-zinc-800">
+                {/* Drawer header with panel tabs — host version */}
+                <div className="flex items-center border-b border-zinc-800">
+                  {/* Tab buttons for switching between panels */}
+                  <div className="flex flex-1 overflow-x-auto scrollbar-none">
+                    {([
+                      { key: 'waiting' as const, label: 'Waiting', icon: <Users className="w-3.5 h-3.5" /> },
+                      { key: 'participants' as const, label: 'People', icon: <Users className="w-3.5 h-3.5" /> },
+                      { key: 'chat' as const, label: 'Chat', icon: <MessageCircle className="w-3.5 h-3.5" /> },
+                      { key: 'slides' as const, label: 'Slides', icon: <Sliders className="w-3.5 h-3.5" /> },
+                      { key: 'health' as const, label: 'Health', icon: <Shield className="w-3.5 h-3.5" /> },
+                      { key: 'fakeusers' as const, label: 'Bots', icon: <Bot className="w-3.5 h-3.5" /> },
+                      { key: 'impersonate' as const, label: 'Impersonate', icon: <Eye className="w-3.5 h-3.5" /> },
+                    ]).map(tab => (
+                      <button
+                        key={tab.key}
+                        onClick={() => setMobileDrawer(tab.key)}
+                        className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                          mobileDrawer === tab.key
+                            ? 'text-zinc-100 border-b-2 border-emerald-500'
+                            : 'text-zinc-500 hover:text-zinc-300 border-b-2 border-transparent'
+                        }`}
+                      >
+                        {tab.icon}
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Close button */}
+                  <button onClick={() => setMobileDrawer(null)} className="p-2 mr-1 rounded-lg hover:bg-zinc-800 flex-shrink-0">
                     <X className="w-4 h-4 text-zinc-400" />
                   </button>
                 </div>
                 <div className="overflow-auto max-h-[60vh]">
                   {mobileDrawer === 'chat' && <ChatPanel />}
-                  {mobileDrawer === 'participants' && <ParticipantList />}
+                  {mobileDrawer === 'participants' && <ParticipantList standalone />}
                   {mobileDrawer === 'files' && <FileSharingPanel />}
                   {mobileDrawer === 'waiting' && <WaitingRoom />}
                   {mobileDrawer === 'slides' && <SlideUpload />}
@@ -866,6 +947,18 @@ export function RoomPage() {
 
           <span className="text-zinc-700 text-xs hidden sm:inline">|</span>
 
+          {/* Grid/Stream toggle */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[9px] sm:text-[10px] text-zinc-400 hover:text-zinc-200 gap-0.5"
+            onClick={() => setViewerShowGrid(!viewerShowGrid)}
+            title={viewerShowGrid ? 'Back to stream' : 'See all participants'}
+          >
+            <Users className="w-3 h-3" />
+            <span className="hidden sm:inline">{viewerShowGrid ? 'Stream' : 'Grid'}</span>
+          </Button>
+
           {/* Copy invite */}
           <Button
             variant="ghost"
@@ -903,9 +996,56 @@ export function RoomPage() {
 
       {/* Viewer main content area */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Main: ViewerExperience */}
+        {/* Main: ViewerExperience or Participant Grid */}
         <div className="flex-1 flex flex-col min-w-0">
-          <ViewerExperience />
+          {viewerShowGrid ? (
+            <div className="flex-1 p-2 sm:p-4 overflow-auto">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3 auto-rows-min">
+                {Array.from(nodes.values()).map(node => {
+                  const isHandRaisedForNode = handRaises.some(h => h.peerId === node.peerId && h.isRaised);
+                  const initials = node.displayName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+                  const rtt = node.bandwidth?.rttMs ?? 999;
+                  const connQuality = rtt < 100 ? 'bg-emerald-400' : rtt < 300 ? 'bg-amber-400' : 'bg-red-400';
+                  return (
+                    <div key={node.peerId} className={`relative bg-zinc-900 border rounded-xl p-3 sm:p-4 flex flex-col items-center gap-2 transition-all ${
+                      isHandRaisedForNode ? 'border-amber-500/50 bg-amber-500/5' : 'border-zinc-800 hover:border-zinc-700'
+                    }`}>
+                      {/* Connection quality dot */}
+                      <div className={`absolute top-2 right-2 w-2 h-2 rounded-full ${connQuality}`} />
+
+                      {/* Avatar */}
+                      <div className={`w-10 h-10 sm:w-14 sm:h-14 rounded-full flex items-center justify-center text-xs sm:text-sm font-bold
+                        ${node.role === 'host' ? 'bg-emerald-500/20 text-emerald-400' :
+                          node.role === 'co-host' ? 'bg-violet-500/20 text-violet-400' :
+                          node.role === 'speaker' ? 'bg-amber-500/20 text-amber-400' :
+                          'bg-zinc-800 text-zinc-400'}`}>
+                        {node.role === 'host' ? '👑' : initials}
+                      </div>
+
+                      {/* Name */}
+                      <span className="text-[10px] sm:text-xs text-zinc-300 truncate max-w-full text-center">{node.displayName}</span>
+
+                      {/* Role badge */}
+                      <div className="flex items-center gap-1">
+                        {node.role === 'host' && <span className="text-[8px] sm:text-[9px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full">Host</span>}
+                        {node.role === 'co-host' && <span className="text-[8px] sm:text-[9px] text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded-full">Co-Host</span>}
+                        {node.role === 'speaker' && <span className="text-[8px] sm:text-[9px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded-full">Speaker</span>}
+                      </div>
+
+                      {/* Hand raise indicator */}
+                      {isHandRaisedForNode && (
+                        <span className="text-[8px] sm:text-[9px] text-amber-300 bg-amber-500/15 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                          ✋ Raised
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <ViewerExperience />
+          )}
         </div>
 
         {/* Side panels */}
@@ -964,7 +1104,7 @@ export function RoomPage() {
               </div>
               <div className="overflow-auto max-h-[60vh]">
                 {mobileDrawer === 'chat' && <ChatPanel />}
-                {mobileDrawer === 'participants' && <ParticipantList />}
+                {mobileDrawer === 'participants' && <ParticipantList standalone />}
                 {mobileDrawer === 'files' && <FileSharingPanel />}
               </div>
             </motion.div>

@@ -42,14 +42,14 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
     setAudioEnabled, setVideoEnabled,
     setLocalStream, setScreenShare,
     setRecorder, setRecordingState,
-    addReaction, reset, isHost, roomInfo,
+    addReaction, reset, isHost, isCoHost, roomInfo,
     streamQuality, setStreamQuality,
     isPresenting, setIsPresenting,
     isWaitingRoomEnabled, setWaitingRoomEnabled,
     handRaises, addHandRaise, removeHandRaise,
   } = useRoomStore();
 
-  const isSpeaker = myNode?.role === 'host' || myNode?.role === 'speaker';
+  const isSpeaker = myNode?.role === 'host' || myNode?.role === 'speaker' || myNode?.role === 'co-host';
   const hasRaisedHand = handRaises.some(h => h.peerId === myNode?.peerId && h.isRaised);
   const isAudioOnly = streamQuality === 'audio-only';
   const [showReactions, setShowReactions] = useState(false);
@@ -66,8 +66,12 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
         setShowMore(false);
       }
     };
+    // Use mousedown only — touchstart fires before click on mobile,
+    // causing the dropdown to close immediately when opened by tap
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+    };
   }, []);
 
   const handleToggleAudio = () => {
@@ -369,7 +373,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
         <div className="w-px h-6 sm:h-8 bg-zinc-700 mx-0.5 sm:mx-1 flex-shrink-0" />
 
         {/* More menu - host only options */}
-        {isHost && (
+        {(isHost || isCoHost) && (
           <div className="relative flex-shrink-0" ref={moreRef}>
             <ControlButton
               onClick={() => setShowMore(!showMore)}

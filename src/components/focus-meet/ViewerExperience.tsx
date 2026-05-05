@@ -177,6 +177,17 @@ export function ViewerExperience() {
   // ── Transition tracking ──
   const prevModeRef = useRef<ViewerMode>('full');
   const modeTransitionTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastModeToastRef = useRef<Record<string, number>>({});
+
+  // Debounced mode toast — only show once per mode transition within a cooldown window
+  const debouncedModeToast = (key: string, toastFn: () => void, cooldownMs = 5000) => {
+    const now = Date.now();
+    const lastTime = lastModeToastRef.current[key] || 0;
+    if (now - lastTime >= cooldownMs) {
+      lastModeToastRef.current[key] = now;
+      toastFn();
+    }
+  };
 
   // ── Auto-switch based on available content ──
   const contentBasedMode = useMemo(() => {
@@ -216,7 +227,7 @@ export function ViewerExperience() {
     startTransition(() => { setActiveMode(suggestedMode); });
   }, [suggestedMode, manualOverride]);
 
-  // ── Toast on mode change (content-driven + bandwidth-driven) ──
+  // ── Toast on mode change (content-driven + bandwidth-driven) — debounced ──
   useEffect(() => {
     if (manualOverride) return;
     if (prevModeRef.current !== activeMode) {
@@ -225,6 +236,7 @@ export function ViewerExperience() {
 
       // Determine if this was a content change or bandwidth change
       const isContentDriven = contentBasedMode !== prev;
+      const toastKey = `mode-${activeMode}`;
 
       if (isContentDriven) {
         const labels: Record<ViewerMode, string> = {
@@ -232,7 +244,7 @@ export function ViewerExperience() {
           'slides-audio': 'Slides shared — switching to slide view',
           'audio-only': 'Presenter is audio-only',
         };
-        toast.info(labels[activeMode], { duration: 3000 });
+        debouncedModeToast(toastKey, () => toast.info(labels[activeMode], { duration: 3000 }));
       } else {
         // Existing bandwidth-based toast logic
         const isUpgrade =
@@ -240,39 +252,40 @@ export function ViewerExperience() {
           (activeMode === 'slides-audio' && prev === 'audio-only');
 
         if (isUpgrade) {
-          toast.success(`Upgraded to ${MODE_CONFIG[activeMode].label}`, {
+          debouncedModeToast(toastKey, () => toast.success(`Upgraded to ${MODE_CONFIG[activeMode].label}`, {
             description: MODE_CONFIG[activeMode].description,
             duration: 3000,
-          });
+          }));
         } else if (activeMode !== prev) {
-          toast.info(`Switched to ${MODE_CONFIG[activeMode].label}`, {
+          debouncedModeToast(toastKey, () => toast.info(`Switched to ${MODE_CONFIG[activeMode].label}`, {
             description: 'Adapting to your connection',
             duration: 3000,
-          });
+          }));
         }
       }
     }
   }, [activeMode, contentBasedMode, manualOverride]);
 
-  // ── Auto-suggest mode changes when not manually overridden ──
+  // ── Auto-suggest mode changes when not manually overridden — debounced ──
   useEffect(() => {
     if (manualOverride) {
-      // Still show suggestion toasts
+      // Still show suggestion toasts (debounced)
       if (suggestedMode !== activeMode) {
         const isUpgrade =
           (suggestedMode === 'full' && activeMode !== 'full') ||
           (suggestedMode === 'slides-audio' && activeMode === 'audio-only');
+        const suggestKey = `suggest-${suggestedMode}`;
 
         if (isUpgrade) {
-          toast(`Connection improved — ${MODE_CONFIG[suggestedMode].label} available`, {
+          debouncedModeToast(suggestKey, () => toast(`Connection improved — ${MODE_CONFIG[suggestedMode].label} available`, {
             description: 'Click the mode badge to switch',
             duration: 5000,
-          });
+          }));
         } else {
-          toast(`Connection slowed — ${MODE_CONFIG[suggestedMode].label} recommended`, {
+          debouncedModeToast(suggestKey, () => toast(`Connection slowed — ${MODE_CONFIG[suggestedMode].label} recommended`, {
             description: 'Click the mode badge to switch',
             duration: 5000,
-          });
+          }));
         }
       }
     }
