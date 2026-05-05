@@ -1,11 +1,16 @@
 'use client';
 
+// ViewerExperience — Adaptive viewer that syncs with the presenter via real P2P data
+// Shows: live video, synced slides, audio waveform based on connection quality
+// Connected to real P2P engine via useRoomStore
+
 import { useState, useEffect, useRef, useCallback, useMemo, startTransition } from 'react';
 import { useRoomStore } from '@/store/room-store';
 import {
   Wifi, WifiOff, Headphones, Monitor, Gauge,
   TrendingDown, TrendingUp, Volume2, VolumeX,
   Maximize2, Minimize2, Radio, ChevronDown,
+  ArrowUpCircle,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -88,7 +93,7 @@ const BANDWIDTH_LEVELS: Record<'good' | 'ok' | 'poor', BandwidthLevel> = {
   poor: { label: 'Poor', color: 'text-amber-400',   dotClass: 'bg-amber-400',   icon: <TrendingDown className="w-3 h-3" /> },
 };
 
-// Demo slide data
+// Fallback demo slides — only used when no real slides from store
 interface SlideData {
   id: number;
   title: string;
@@ -96,7 +101,7 @@ interface SlideData {
   color: string;
 }
 
-const DEMO_SLIDES: SlideData[] = [
+const FALLBACK_SLIDES: SlideData[] = [
   { id: 0, title: 'Welcome to Focus Meet', subtitle: 'Adaptive live session platform', color: 'from-emerald-900 to-zinc-900' },
   { id: 1, title: 'The Problem', subtitle: 'Why traditional sessions fail', color: 'from-amber-900 to-zinc-900' },
   { id: 2, title: 'Adaptive Delivery', subtitle: 'Content follows your bandwidth', color: 'from-violet-900 to-zinc-900' },
@@ -135,9 +140,16 @@ export function ViewerExperience() {
   const {
     incomingStream, streamQuality, networkHealth,
     localStream, screenShare, audioEnabled,
+    engine, slides, currentSlideIndex, isPresenting,
+    streamHealth,
   } = useRoomStore();
 
-  // ── Derived network metrics ──
+  // ── Use real slides from store, fallback to demo slides ──
+  const hasRealSlides = slides.length > 0;
+  const activeSlides = hasRealSlides ? slides : FALLBACK_SLIDES;
+  const totalSlides = activeSlides.length;
+
+  // ── Derived network metrics (from real store data) ──
   const bandwidthKbps = useMemo(() => {
     if (networkHealth?.totalBandwidthKbps) return networkHealth.totalBandwidthKbps;
     // Fallback: navigator.connection
@@ -151,15 +163,20 @@ export function ViewerExperience() {
 
   const rttMs = useMemo(() => networkHealth?.avgRTT ?? 150, [networkHealth]);
   const packetLoss = useMemo(() => networkHealth?.avgPacketLoss ?? 0.03, [networkHealth]);
-  const isPresenting = screenShare.isSharing;
+  const isScreenSharing = screenShare.isSharing;
 
   // ── Mode state ──
   const [activeMode, setActiveMode] = useState<ViewerMode>('full');
   const [manualOverride, setManualOverride] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [currentSlide, setCurrentSlide] = useState(0);
   const [autoFollow, setAutoFollow] = useState(true);
+
+  // ── Local slide index for manual navigation ──
+  const [localSlideIndex, setLocalSlideIndex] = useState(0);
+
+  // The effective slide index: follow presenter's index if autoFollow, otherwise local
+  const currentSlide = autoFollow ? currentSlideIndex : localSlideIndex;
 
   // ── Audio waveform ──
   const [waveHeights, setWaveHeights] = useState<number[]>(Array(28).fill(0));
@@ -169,8 +186,17 @@ export function ViewerExperience() {
   const prevModeRef = useRef<ViewerMode>('full');
   const modeTransitionTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Determine suggested mode from store ──
-  const suggestedMode = useMemo(() => streamQualityToMode(streamQuality), [streamQuality]);
+  // ── Determine suggested mode from real store data ──
+  const suggestedMode = useMemo(() => {
+    const mode = streamQualityToMode(streamQuality);
+
+    // If video is poor AND slides are available, suggest slides-audio
+    if (mode === 'audio-only' && hasRealSlides) {
+      return 'slides-audio';
+    }
+
+    return mode;
+  }, [streamQuality, hasRealSlides]);
 
   // ── Auto-switch mode (unless manual override) ──
   useEffect(() => {
@@ -226,17 +252,13 @@ export function ViewerExperience() {
     }
   }, [suggestedMode, manualOverride, activeMode]);
 
-  // ── Slide auto-advance (demo) ──
+  // ── Sync slide index from store when autoFollow ──
+  // (The store's currentSlideIndex is updated by RoomPage via engine.onSlideChange callback)
   useEffect(() => {
-    if (!autoFollow) return;
-    const interval = setInterval(() => {
-      setCurrentSlide(prev => {
-        const next = prev + 1;
-        return next < DEMO_SLIDES.length ? next : prev;
-      });
-    }, 8000);
-    return () => clearInterval(interval);
-  }, [autoFollow]);
+    if (autoFollow) {
+      // No-op — currentSlide already derived from store's currentSlideIndex
+    }
+  }, [currentSlideIndex, autoFollow]);
 
   // ── Audio waveform animation ──
   useEffect(() => {
@@ -277,10 +299,31 @@ export function ViewerExperience() {
   }, [suggestedMode]);
 
   const handleSlideNav = useCallback((index: number) => {
-    if (index < 0 || index >= DEMO_SLIDES.length) return;
+    if (index < 0 || index >= totalSlides) return;
     setAutoFollow(false);
-    setCurrentSlide(index);
+    setLocalSlideIndex(index);
+  }, [totalSlides]);
+
+  const handleRejoinLive = useCallback(() => {
+    setAutoFollow(true);
   }, []);
+
+  const handleRequestHD = useCallback(() => {
+    // Request higher quality from the host/presenter via the engine
+    if (engine) {
+      // Send a quality request signal through the mesh
+      engine.sendChatMessage('[system] Viewer requests HD quality');
+      toast.info('HD quality requested', {
+        description: 'The presenter will be notified',
+        duration: 3000,
+      });
+    } else {
+      toast.error('Not connected yet', {
+        description: 'Please wait for connection to establish',
+        duration: 3000,
+      });
+    }
+  }, [engine]);
 
   const handleToggleFullscreen = useCallback(() => {
     const el = document.fullscreenElement;
@@ -296,7 +339,45 @@ export function ViewerExperience() {
   const bwLevel = getBandwidthLevel(bandwidthKbps);
   const bwConfig = BANDWIDTH_LEVELS[bwLevel];
   const modeConfig = MODE_CONFIG[activeMode];
-  const slide = DEMO_SLIDES[currentSlide];
+
+  // Get current slide data — either a real image or a fallback demo slide
+  const isRealSlide = hasRealSlides && currentSlide < slides.length;
+  const fallbackSlide = !hasRealSlides && currentSlide < FALLBACK_SLIDES.length ? FALLBACK_SLIDES[currentSlide] : null;
+
+  // Render slide content for slides-audio mode
+  const renderSlideContent = () => {
+    if (isRealSlide) {
+      return (
+        <img
+          src={slides[currentSlide]}
+          alt={`Slide ${currentSlide + 1}`}
+          className="w-full h-full object-contain"
+          draggable={false}
+        />
+      );
+    }
+
+    if (fallbackSlide) {
+      return (
+        <div className={`absolute inset-0 bg-gradient-to-br ${fallbackSlide.color} flex items-center justify-center`}>
+          <div className="text-center px-6 sm:px-16 max-w-2xl">
+            <h2 className="text-xl sm:text-3xl lg:text-4xl font-bold text-white mb-3 leading-tight">
+              {fallbackSlide.title}
+            </h2>
+            <p className="text-zinc-400 text-sm sm:text-base">
+              {fallbackSlide.subtitle}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="absolute inset-0 bg-zinc-800 flex items-center justify-center">
+        <p className="text-zinc-500 text-sm">No slide available</p>
+      </div>
+    );
+  };
 
   // ──────────────────────────────
   // RENDER
@@ -369,7 +450,7 @@ export function ViewerExperience() {
           )}
         </div>
 
-        {/* Center: Bandwidth indicator */}
+        {/* Center: Bandwidth indicator (real data from store) */}
         <div className="flex items-center gap-1.5 sm:gap-2 text-zinc-400 text-[10px] sm:text-xs">
           <span className={`inline-block w-2 h-2 rounded-full ${bwConfig.dotClass} ${bwLevel === 'good' ? 'animate-pulse' : ''}`} />
           <span className={bwConfig.color}>{bwConfig.label}</span>
@@ -379,8 +460,28 @@ export function ViewerExperience() {
           <span className="hidden md:inline">{Math.round(rttMs)}ms</span>
         </div>
 
-        {/* Right: Data usage + actions */}
+        {/* Right: Data usage + actions + Request HD */}
         <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Request HD button — shown when not in full mode */}
+          {activeMode !== 'full' && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 text-[10px]"
+                    onClick={handleRequestHD}
+                  >
+                    <ArrowUpCircle className="w-3 h-3" />
+                    <span className="hidden sm:inline ml-1">Request HD</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Request higher quality from presenter</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -465,15 +566,19 @@ export function ViewerExperience() {
                 )}
 
                 {/* Slide title overlay */}
-                {isPresenting && slide && (
+                {isPresenting && (fallbackSlide || isRealSlide) && (
                   <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-gradient-to-t from-zinc-900/95 via-zinc-900/60 to-transparent">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="text-zinc-200 text-sm font-medium truncate">{slide.title}</p>
-                        <p className="text-zinc-500 text-xs truncate">{slide.subtitle}</p>
+                        <p className="text-zinc-200 text-sm font-medium truncate">
+                          {isRealSlide ? `Slide ${currentSlide + 1}` : fallbackSlide?.title}
+                        </p>
+                        <p className="text-zinc-500 text-xs truncate">
+                          {isRealSlide ? '' : fallbackSlide?.subtitle}
+                        </p>
                       </div>
                       <Badge variant="outline" className={`text-[9px] flex-shrink-0 ${MODE_CONFIG['full'].borderColor} ${MODE_CONFIG['full'].color} ${MODE_CONFIG['full'].bgColor}`}>
-                        Slide {currentSlide + 1}/{DEMO_SLIDES.length}
+                        Slide {currentSlide + 1}/{totalSlides}
                       </Badge>
                     </div>
                   </div>
@@ -490,17 +595,8 @@ export function ViewerExperience() {
           >
             <div className="flex-1 flex flex-col">
               <div className="flex-1 relative m-2 sm:m-3 rounded-xl border border-zinc-800 overflow-hidden">
-                {/* Slide content */}
-                <div className={`absolute inset-0 bg-gradient-to-br ${slide?.color || 'from-zinc-800 to-zinc-900'} flex items-center justify-center`}>
-                  <div className="text-center px-6 sm:px-16 max-w-2xl">
-                    <h2 className="text-xl sm:text-3xl lg:text-4xl font-bold text-white mb-3 leading-tight">
-                      {slide?.title || `Slide ${currentSlide + 1}`}
-                    </h2>
-                    <p className="text-zinc-400 text-sm sm:text-base">
-                      {slide?.subtitle}
-                    </p>
-                  </div>
-                </div>
+                {/* Slide content — real from P2P or fallback */}
+                {renderSlideContent()}
 
                 {/* "No video" badge */}
                 <div className="absolute top-3 left-3 flex items-center gap-2">
@@ -522,7 +618,7 @@ export function ViewerExperience() {
                 <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-gradient-to-t from-zinc-900/95 via-zinc-900/60 to-transparent">
                   <div className="flex items-center justify-between">
                     <span className="text-zinc-300 text-xs">
-                      Slide {currentSlide + 1} of {DEMO_SLIDES.length}
+                      Slide {currentSlide + 1} of {totalSlides}
                     </span>
                     {autoFollow && (
                       <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-400 bg-emerald-500/10 gap-1">
@@ -564,17 +660,17 @@ export function ViewerExperience() {
                 <div className="text-center">
                   <p className="text-zinc-400 text-xs mb-1">Now presenting</p>
                   <h3 className="text-zinc-200 text-lg sm:text-xl font-semibold">
-                    {slide?.title || 'Live Session'}
+                    {isRealSlide ? `Slide ${currentSlide + 1}` : (fallbackSlide?.title || 'Live Session')}
                   </h3>
                   <p className="text-zinc-500 text-xs mt-1">
-                    {slide?.subtitle || 'Slide ' + (currentSlide + 1) + ' of ' + DEMO_SLIDES.length}
+                    {isRealSlide ? `Slide ${currentSlide + 1} of ${totalSlides}` : (fallbackSlide?.subtitle || `Slide ${currentSlide + 1} of ${totalSlides}`)}
                   </p>
                 </div>
               </div>
 
               {/* Progress dots */}
               <div className="flex items-center gap-1.5">
-                {DEMO_SLIDES.map((_, i) => (
+                {activeSlides.map((_, i) => (
                   <div
                     key={i}
                     className={`w-2 h-2 rounded-full transition-colors ${
@@ -625,29 +721,52 @@ export function ViewerExperience() {
             )}
             {!autoFollow && (
               <button
-                onClick={() => setAutoFollow(true)}
+                onClick={handleRejoinLive}
                 className="flex-shrink-0 text-[9px] text-amber-400 hover:text-amber-300 underline underline-offset-2"
               >
                 Re-join live
               </button>
             )}
-            {DEMO_SLIDES.map((s, i) => (
-              <button
-                key={s.id}
-                onClick={() => handleSlideNav(i)}
-                className={`flex-shrink-0 w-14 h-9 sm:w-18 sm:h-11 rounded-md border transition-all overflow-hidden ${
-                  i === currentSlide
-                    ? 'border-emerald-500 ring-1 ring-emerald-500/50'
-                    : 'border-zinc-700 hover:border-zinc-500'
-                }`}
-              >
-                <div className={`w-full h-full bg-gradient-to-br ${s.color} flex items-center justify-center`}>
-                  <span className={`text-[6px] sm:text-[7px] font-medium ${i === currentSlide ? 'text-white' : 'text-zinc-400'} text-center leading-tight px-0.5`}>
-                    {s.title}
-                  </span>
-                </div>
-              </button>
-            ))}
+            {hasRealSlides ? (
+              // Render real slide thumbnails from store
+              slides.map((slideUrl, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleSlideNav(i)}
+                  className={`flex-shrink-0 w-14 h-9 sm:w-18 sm:h-11 rounded-md border transition-all overflow-hidden ${
+                    i === currentSlide
+                      ? 'border-emerald-500 ring-1 ring-emerald-500/50'
+                      : 'border-zinc-700 hover:border-zinc-500'
+                  }`}
+                >
+                  <img
+                    src={slideUrl}
+                    alt={`Slide ${i + 1}`}
+                    className="w-full h-full object-cover"
+                    draggable={false}
+                  />
+                </button>
+              ))
+            ) : (
+              // Fallback demo slide thumbnails
+              FALLBACK_SLIDES.map((s, i) => (
+                <button
+                  key={s.id}
+                  onClick={() => handleSlideNav(i)}
+                  className={`flex-shrink-0 w-14 h-9 sm:w-18 sm:h-11 rounded-md border transition-all overflow-hidden ${
+                    i === currentSlide
+                      ? 'border-emerald-500 ring-1 ring-emerald-500/50'
+                      : 'border-zinc-700 hover:border-zinc-500'
+                  }`}
+                >
+                  <div className={`w-full h-full bg-gradient-to-br ${s.color} flex items-center justify-center`}>
+                    <span className={`text-[6px] sm:text-[7px] font-medium ${i === currentSlide ? 'text-white' : 'text-zinc-400'} text-center leading-tight px-0.5`}>
+                      {s.title}
+                    </span>
+                  </div>
+                </button>
+              ))
+            )}
           </div>
         </div>
       )}

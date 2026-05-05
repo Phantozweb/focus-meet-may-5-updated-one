@@ -1,32 +1,42 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
 import { useRoomStore } from '@/store/room-store';
 import { WaitingAttendee } from '@/lib/types';
 import {
   UserCheck, UserX, Users, Clock, Monitor, Smartphone,
-  Tablet, Volume2, VolumeX, CheckCircle2, XCircle,
+  Tablet, Volume2, VolumeX, CheckCircle2, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
-import { Separator } from '@/components/ui/separator';
+import { motion, AnimatePresence } from 'framer-motion';
 
 export function WaitingRoom() {
   const {
-    waitingRoom, isHost, engine, myNode,
+    waitingRoom, isHost, isCoHost, engine,
     removeWaitingAttendee, admitAllWaiting,
-    roomInfo,
   } = useRoomStore();
 
   const [autoAdmit, setAutoAdmit] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false);
   const prevCountRef = useRef(0);
 
-  // Play notification sound when new person joins waiting room
+  // Auto-expand when someone enters the waiting room
   useEffect(() => {
-    if (soundEnabled && waitingRoom.length > prevCountRef.current && prevCountRef.current >= 0) {
+    if (waitingRoom.length > 0 && prevCountRef.current === 0) {
+      startTransition(() => {
+        setIsExpanded(true);
+      });
+    }
+    prevCountRef.current = waitingRoom.length;
+  }, [waitingRoom.length]);
+
+  // Play notification sound when a new person joins waiting room
+  useEffect(() => {
+    if (soundEnabled && waitingRoom.length > prevCountRef.current && prevCountRef.current > 0) {
       try {
         const ctx = new AudioContext();
         const osc = ctx.createOscillator();
@@ -43,151 +53,159 @@ export function WaitingRoom() {
         // Audio not available
       }
     }
-    prevCountRef.current = waitingRoom.length;
   }, [waitingRoom.length, soundEnabled]);
 
   // Auto-admit: when enabled, automatically admit new attendees
   useEffect(() => {
     if (autoAdmit && waitingRoom.length > 0) {
       const timer = setTimeout(() => {
+        waitingRoom.forEach((a) => {
+          engine?.admitFromWaitingRoom(a.peerId);
+        });
         admitAllWaiting();
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [autoAdmit, waitingRoom.length, admitAllWaiting]);
+  }, [autoAdmit, waitingRoom.length, admitAllWaiting, engine, waitingRoom]);
 
   const handleAdmit = useCallback((peerId: string) => {
-    if (engine && myNode) {
-      engine['broadcastToChildren']?.({
-        type: 'waiting-admit',
-        payload: { peerId },
-        senderId: myNode.peerId,
-        senderName: myNode.displayName,
-        roomId: '',
-        timestamp: Date.now(),
-      });
-    }
+    engine?.admitFromWaitingRoom(peerId);
     removeWaitingAttendee(peerId);
-  }, [engine, myNode, removeWaitingAttendee]);
+  }, [engine, removeWaitingAttendee]);
 
   const handleDeny = useCallback((peerId: string) => {
-    if (engine && myNode) {
-      engine['broadcastToChildren']?.({
-        type: 'waiting-deny',
-        payload: { peerId },
-        senderId: myNode.peerId,
-        senderName: myNode.displayName,
-        roomId: '',
-        timestamp: Date.now(),
-      });
-    }
+    engine?.denyFromWaitingRoom(peerId);
     removeWaitingAttendee(peerId);
-  }, [engine, myNode, removeWaitingAttendee]);
+  }, [engine, removeWaitingAttendee]);
 
   const handleAdmitAll = useCallback(() => {
-    if (engine && myNode) {
-      waitingRoom.forEach((a) => {
-        engine['broadcastToChildren']?.({
-          type: 'waiting-admit',
-          payload: { peerId: a.peerId },
-          senderId: myNode.peerId,
-          senderName: myNode.displayName,
-          roomId: '',
-          timestamp: Date.now(),
-        });
-      });
-    }
+    waitingRoom.forEach((a) => {
+      engine?.admitFromWaitingRoom(a.peerId);
+    });
     admitAllWaiting();
-  }, [engine, myNode, waitingRoom, admitAllWaiting]);
+  }, [engine, waitingRoom, admitAllWaiting]);
 
-  // Only visible to host
-  if (!isHost) return null;
-
-  // Nothing to show if empty
-  if (waitingRoom.length === 0) {
-    return (
-      <div className="p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Users className="w-4 h-4 text-zinc-500" />
-          <span className="text-sm font-semibold text-zinc-400">Waiting Room</span>
-        </div>
-        <div className="text-center py-6">
-          <Users className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
-          <p className="text-xs text-zinc-600">No one is waiting</p>
-        </div>
-      </div>
-    );
-  }
+  // Only visible to host (and co-host)
+  if (!isHost && !isCoHost) return null;
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-zinc-800">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Users className="w-4 h-4 text-amber-400" />
-            <span className="text-sm font-semibold text-zinc-200">Waiting Room</span>
+    <div className="flex flex-col">
+      {/* Collapsible header — always visible */}
+      <button
+        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-zinc-800/50 transition-colors"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center gap-2">
+          {isExpanded ? (
+            <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />
+          )}
+          <Users className="w-4 h-4 text-amber-400" />
+          <span className="text-sm font-semibold text-zinc-200">Waiting Room</span>
+          {waitingRoom.length > 0 && (
             <Badge className="h-5 px-1.5 text-[10px] bg-amber-500/20 text-amber-400 border-0 animate-pulse">
               {waitingRoom.length}
             </Badge>
-          </div>
+          )}
+        </div>
+        {/* Quick admit-all when collapsed */}
+        {!isExpanded && waitingRoom.length > 0 && (
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 text-xs bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 hover:text-emerald-300"
-            onClick={handleAdmitAll}
+            className="h-6 text-[10px] bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 hover:text-emerald-300"
+            onClick={(e) => { e.stopPropagation(); handleAdmitAll(); }}
           >
-            <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+            <CheckCircle2 className="w-3 h-3 mr-1" />
             Admit All
           </Button>
-        </div>
+        )}
+      </button>
 
-        {/* Settings */}
-        <div className="flex items-center gap-4 mt-2 pt-2 border-t border-zinc-800/50">
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={autoAdmit}
-              onCheckedChange={setAutoAdmit}
-              className="data-[state=checked]:bg-emerald-600"
-            />
-            <span className="text-[10px] text-zinc-500">Auto-admit</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-5 w-5"
-              onClick={() => setSoundEnabled(!soundEnabled)}
-            >
-              {soundEnabled ? (
-                <Volume2 className="w-3 h-3 text-zinc-400" />
-              ) : (
-                <VolumeX className="w-3 h-3 text-zinc-600" />
-              )}
-            </Button>
-            <span className="text-[10px] text-zinc-500">Sound</span>
-          </div>
-        </div>
-      </div>
+      {/* Expandable body */}
+      <AnimatePresence>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: 'easeInOut' }}
+            className="overflow-hidden"
+          >
+            {/* Settings row */}
+            <div className="flex items-center gap-4 px-4 py-2 border-b border-zinc-800/50">
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={autoAdmit}
+                  onCheckedChange={setAutoAdmit}
+                  className="data-[state=checked]:bg-emerald-600"
+                />
+                <span className="text-[10px] text-zinc-500">Auto-admit</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5"
+                  onClick={() => setSoundEnabled(!soundEnabled)}
+                >
+                  {soundEnabled ? (
+                    <Volume2 className="w-3 h-3 text-zinc-400" />
+                  ) : (
+                    <VolumeX className="w-3 h-3 text-zinc-600" />
+                  )}
+                </Button>
+                <span className="text-[10px] text-zinc-500">Sound</span>
+              </div>
+            </div>
 
-      {/* Attendee List */}
-      <ScrollArea className="flex-1 max-h-96">
-        <div className="p-3 space-y-1.5">
-          {waitingRoom.map((attendee) => (
-            <WaitingAttendeeCard
-              key={attendee.peerId}
-              attendee={attendee}
-              onAdmit={handleAdmit}
-              onDeny={handleDeny}
-            />
-          ))}
-        </div>
-      </ScrollArea>
+            {/* Attendee list or empty state */}
+            {waitingRoom.length === 0 ? (
+              <div className="text-center py-6 px-4">
+                <Users className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
+                <p className="text-xs text-zinc-600">No one is waiting</p>
+              </div>
+            ) : (
+              <>
+                {/* Admit all bar */}
+                <div className="px-4 py-2 border-b border-zinc-800/50 flex justify-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 hover:text-emerald-300"
+                    onClick={handleAdmitAll}
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+                    Admit All ({waitingRoom.length})
+                  </Button>
+                </div>
+
+                {/* Scrollable attendee list */}
+                <ScrollArea className="max-h-64">
+                  <div className="p-3 space-y-1.5">
+                    {waitingRoom.map((attendee) => (
+                      <WaitingAttendeeCard
+                        key={attendee.peerId}
+                        attendee={attendee}
+                        onAdmit={handleAdmit}
+                        onDeny={handleDeny}
+                      />
+                    ))}
+                  </div>
+                </ScrollArea>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-// ---------- Individual Attendee Card ----------
+// ─────────────────────────────────────────────────────────────
+// Individual attendee card with live wait-time counter
+// ─────────────────────────────────────────────────────────────
 
 function WaitingAttendeeCard({
   attendee,
@@ -198,9 +216,19 @@ function WaitingAttendeeCard({
   onAdmit: (peerId: string) => void;
   onDeny: (peerId: string) => void;
 }) {
-  const [now] = useState(Date.now());
-  const waitSeconds = Math.floor((now - attendee.joinedAt) / 1000);
-  const waitLabel = waitSeconds < 60 ? `${waitSeconds}s` : `${Math.floor(waitSeconds / 60)}m`;
+  const [now, setNow] = useState(Date.now());
+
+  // Live timer — updates every second
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const waitSeconds = Math.max(0, Math.floor((now - attendee.joinedAt) / 1000));
+  const waitLabel =
+    waitSeconds < 60
+      ? `${waitSeconds}s`
+      : `${Math.floor(waitSeconds / 60)}m ${waitSeconds % 60}s`;
 
   const deviceIcon = attendee.device.isMobile ? (
     attendee.device.deviceType === 'tablet' ? (
@@ -214,7 +242,7 @@ function WaitingAttendeeCard({
 
   const initials = attendee.displayName
     .split(' ')
-    .map(w => w[0])
+    .map((w) => w[0])
     .join('')
     .slice(0, 2)
     .toUpperCase();
@@ -229,7 +257,9 @@ function WaitingAttendeeCard({
       {/* Info */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <span className="text-xs font-medium text-zinc-200 truncate">{attendee.displayName}</span>
+          <span className="text-xs font-medium text-zinc-200 truncate">
+            {attendee.displayName}
+          </span>
         </div>
         <div className="flex items-center gap-2 mt-0.5">
           {deviceIcon}
@@ -241,7 +271,7 @@ function WaitingAttendeeCard({
         </div>
       </div>
 
-      {/* Actions */}
+      {/* Actions — Admit (green) & Deny (red) */}
       <div className="flex gap-1 flex-shrink-0">
         <Button
           variant="ghost"

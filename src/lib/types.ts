@@ -2,7 +2,8 @@
 // Zero-budget, bandwidth-aware, device-adaptive, peer-as-proxy P2P
 // Optimized for 700+ users with active join/leave churn
 
-export type UserRole = 'host' | 'speaker' | 'viewer' | 'root';
+export type UserRole = 'host' | 'co-host' | 'speaker' | 'viewer' | 'root';
+// 'co-host' = designated co-host with broadcast and moderation privileges
 // 'root' = invisible dummy relay node — appears as regular viewer to all users
 // Auto-selected from high-bandwidth attendees, keeps webinar alive if host leaves
 export type NodeStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting' | 'error';
@@ -241,7 +242,12 @@ export type SignalMessageType =
   | 'moderation-action'
   | 'room-lock'
   | 'room-unlock'
-  | 'backup-parent-assign';
+  | 'backup-parent-assign'
+  | 'slide-change'
+  | 'slide-broadcast'
+  | 'annotation-update'
+  | 'co-host-assign'
+  | 'co-host-revoke';
 
 export interface SignalMessage {
   type: SignalMessageType;

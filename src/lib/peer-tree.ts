@@ -167,11 +167,23 @@ export class FractalMeshEngine {
   private onFileChunk: ((fileId: string, chunkIndex: number, totalChunks: number, data: ArrayBuffer) => void) | null = null;
   private onScreenShare: ((isSharing: boolean, sharedBy: string, sharedByName: string, stream: MediaStream | null) => void) | null = null;
   private onReaction: ((reaction: Reaction) => void) | null = null;
+  private onSlideChange: ((slideIndex: number) => void) | null = null;
+  private onAnnotation: ((annotation: { type: string; x: number; y: number; data?: any }) => void) | null = null;
+  private onCoHostUpdate: ((info: { peerId: string; isCoHost: boolean }) => void) | null = null;
+  private onWaitingRoomUpdate: ((waitingList: Array<{ peerId: string; displayName: string }>) => void) | null = null;
+  private onHandRaiseUpdate: ((info: { peerId: string; displayName: string; isRaised: boolean }) => void) | null = null;
 
   // Screen share state
   private screenShareStream: MediaStream | null = null;
   private isScreenSharing = false;
   private lastReactionTime = 0;
+
+  // Co-host state
+  private coHostIds: Set<string> = new Set();
+
+  // Waiting room state
+  private waitingRoomEnabled = false;
+  private waitingList: Array<{ peerId: string; displayName: string; conn: DataConnection; joinPayload: any }> = [];
 
   // Attendance tracking
   private attendanceLog: Map<string, { joinedAt: number; lastSeenAt: number; leftAt: number | null; displayName: string }> = new Map();
@@ -220,25 +232,50 @@ export class FractalMeshEngine {
 
   // ============ PEER CONFIG ============
 
+  // PRIMARY: Use PeerJS cloud server (0.peerjs.com) as default
   private getPeerConfig() {
     return {
-      debug: 0,
-      config: { iceServers: ICE_SERVERS },
-      host: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
-      port: PEERJS_SERVER_PORT,
-      path: PEERJS_SERVER_PATH,
-      secure: typeof window !== 'undefined' ? window.location.protocol === 'https:' : false,
-    };
-  }
-
-  private getPeerConfigFallback() {
-    return {
-      debug: 0,
+      debug: 1,
       config: { iceServers: ICE_SERVERS },
       host: '0.peerjs.com',
       port: 443,
       path: '/',
       secure: true,
+    };
+  }
+
+  // FALLBACK: Same PeerJS cloud server with slight variation for retry
+  private getPeerConfigFallback() {
+    return {
+      debug: 1,
+      config: { iceServers: ICE_SERVERS },
+      host: '0.peerjs.com',
+      port: 443,
+      path: '/',
+      secure: true,
+    };
+  }
+
+  // ============ MAP DESERIALIZATION ============
+  // When roomInfo is sent via P2P, Map objects get serialized to plain objects.
+  // This method converts them back to Maps when receiving room-info.
+
+  private deserializeRoomInfo(data: any): RoomInfo {
+    if (!data) return data;
+
+    // Convert clusters from plain object back to Map
+    let clusters: Map<string, Cluster>;
+    if (data.clusters instanceof Map) {
+      clusters = data.clusters;
+    } else if (data.clusters && typeof data.clusters === 'object') {
+      clusters = new Map(Object.entries(data.clusters) as [string, Cluster][]);
+    } else {
+      clusters = new Map();
+    }
+
+    return {
+      ...data,
+      clusters,
     };
   }
 
@@ -487,6 +524,11 @@ export class FractalMeshEngine {
       conn.on('data', (d: any) => this.handleSignal(conn, d as SignalMessage));
       conn.on('close', () => this.handleChildDisconnect(conn.peer));
       conn.on('error', () => {});
+
+      // If this peer is one of our assigned children, store the connection
+      if (this.myNode && this.myNode.childrenIds.includes(conn.peer)) {
+        this.childConnections.set(conn.peer, conn);
+      }
     });
   }
 
@@ -752,7 +794,7 @@ export class FractalMeshEngine {
 
     if (!this.myNode || !this.roomInfo) {
       if (msg.type === 'room-info') {
-        this.roomInfo = msg.payload as RoomInfo;
+        this.roomInfo = this.deserializeRoomInfo(msg.payload);
         if (this.myNode) this.myNode.status = 'connected';
         if (this.onConnectionStatus) this.onConnectionStatus('connected');
         this.saveToStorage();
@@ -764,7 +806,7 @@ export class FractalMeshEngine {
     switch (msg.type) {
       case 'join-room': this.handleJoinRoom(conn, msg); break;
       case 'room-info':
-        this.roomInfo = msg.payload as RoomInfo;
+        this.roomInfo = this.deserializeRoomInfo(msg.payload);
         if (this.myNode) this.myNode.status = 'connected';
         if (this.onConnectionStatus) this.onConnectionStatus('connected');
         this.saveToStorage();
@@ -830,6 +872,11 @@ export class FractalMeshEngine {
       case 'room-unlock': this.handleRoomUnlock(msg); break;
       case 'stream-relay': this.handleStreamRelay(msg); break;
       case 'backup-parent-assign': this.handleBackupParentAssign(msg); break;
+      case 'slide-change': this.handleSlideChange(msg); break;
+      case 'slide-broadcast': this.handleSlideChange(msg); break;
+      case 'annotation-update': this.handleAnnotationUpdate(msg); break;
+      case 'co-host-assign': this.handleCoHostAssign(msg); break;
+      case 'co-host-revoke': this.handleCoHostRevoke(msg); break;
       default:
         console.warn('[FractalMesh] Unhandled signal type:', msg.type);
     }
@@ -840,10 +887,49 @@ export class FractalMeshEngine {
   private handleJoinRoom(conn: DataConnection, msg: SignalMessage) {
     if (!this.roomInfo || !this.myNode) return;
 
+    // Check if room is locked
+    if ((this.roomInfo as any).isLocked) {
+      this.sendSignal(conn, { type: 'room-info', payload: { error: 'Room is locked' },
+        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId, timestamp: Date.now() });
+      return;
+    }
+
+    // Check if waiting room is enabled
+    if (this.waitingRoomEnabled) {
+      const { displayName, peerId } = msg.payload;
+      // Add to waiting list instead of processing immediately
+      this.waitingList.push({
+        peerId,
+        displayName,
+        conn,
+        joinPayload: msg.payload,
+      });
+      // Notify the viewer they're in the waiting room
+      this.sendSignal(conn, {
+        type: 'waiting-join',
+        payload: { peerId, displayName, status: 'waiting' },
+        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId, timestamp: Date.now(),
+      });
+      // Notify UI
+      if (this.onWaitingRoomUpdate) {
+        this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+      }
+      return;
+    }
+
+    this.processJoinRoom(conn, msg.payload);
+  }
+
+  /** Extracted join processing logic — called from handleJoinRoom or admitFromWaitingRoom */
+  private processJoinRoom(conn: DataConnection, payload: any) {
+    if (!this.roomInfo || !this.myNode) return;
+
     // Join rate throttling for 700-user stability
     if (!this.checkJoinRate()) {
       // Queue the join — don't reject, just delay
-      setTimeout(() => this.handleJoinRoom(conn, msg), 500);
+      setTimeout(() => this.processJoinRoom(conn, payload), 500);
       return;
     }
 
@@ -854,7 +940,7 @@ export class FractalMeshEngine {
       return;
     }
 
-    const { displayName, peerId, device, maxRelayCapacity } = msg.payload;
+    const { displayName, peerId, device, maxRelayCapacity } = payload;
 
     const bestRelay = this.selectBestRelay(device || this.myDevice);
     const parentNode = bestRelay || this.myNode;
@@ -1596,8 +1682,9 @@ export class FractalMeshEngine {
     const chatMsg = msg.payload as ChatMessage;
     if (this.myNode?.role === 'host') {
       this.broadcastChatMessage(chatMsg);
-    } else if (this.parentConnection) {
-      this.sendSignal(this.parentConnection, { ...msg, senderId: this.myNode!.peerId });
+    } else {
+      // Non-host: relay chat UP to parent AND DOWN to children (except sender)
+      this.relayChatMessage(msg, msg.senderId);
     }
     if (this.onChatMessage) this.onChatMessage(chatMsg);
   }
@@ -1607,6 +1694,24 @@ export class FractalMeshEngine {
     if (this.onChatMessage) this.onChatMessage(chatMsg);
     // Forward to children through tree
     this.broadcastToChildren(msg);
+  }
+
+  /** Relay a chat message UP to parent and DOWN to children (except the sender) */
+  private relayChatMessage(msg: SignalMessage, senderPeerId: string) {
+    // Send UP to parent if we have one
+    if (this.parentConnection && this.myNode?.peerId !== senderPeerId) {
+      this.sendSignal(this.parentConnection, { ...msg, senderId: this.myNode!.peerId });
+    }
+    // Send DOWN to children (except the sender)
+    if (this.myNode && this.roomInfo) {
+      for (const childId of this.myNode.childrenIds) {
+        if (childId === senderPeerId) continue;
+        const conn = this.childConnections.get(childId);
+        if (conn && conn.open) {
+          this.sendSignal(conn, msg);
+        }
+      }
+    }
   }
 
   private broadcastChatMessage(chatMsg: ChatMessage) {
@@ -2516,20 +2621,32 @@ export class FractalMeshEngine {
   private handleFileShareAnnounce(msg: SignalMessage) {
     const fileInfo = msg.payload as SharedFile;
     if (this.onFileShared) this.onFileShared(fileInfo);
+    // Forward to children through tree
+    this.broadcastToChildren(msg);
   }
 
   private handleFileChunk(msg: SignalMessage) {
     const { fileId, chunkIndex, totalChunks, data } = msg.payload;
     if (this.onFileChunk) this.onFileChunk(fileId, chunkIndex, totalChunks, data);
+    // Forward to children through tree
+    this.broadcastToChildren(msg);
   }
 
   private handleFileRequest(conn: DataConnection, msg: SignalMessage) {
-    // If host/relay receives a file request, respond with file chunks
+    const { fileId, requesterId } = msg.payload;
+
+    // Check if we are the file owner — if so, start sending chunks
     // The actual file data would be stored in memory or IndexedDB
-    // For now, acknowledge the request
+    // For now, acknowledge the request and forward
     if (this.onFileShared) {
-      this.onFileShared({ ...msg.payload, status: 'downloading' });
+      this.onFileShared({ ...msg.payload, status: 'downloading', id: fileId } as SharedFile);
     }
+
+    // Forward to children (in case file owner is below us) and parent
+    if (this.parentConnection && this.myNode?.role !== 'host') {
+      this.sendSignal(this.parentConnection, msg);
+    }
+    this.broadcastToChildren(msg);
   }
 
   // ============ SCREEN SHARE HANDLERS ============
@@ -2620,11 +2737,62 @@ export class FractalMeshEngine {
     return { ...sharedFile, status: 'available', data: arrayBuffer };
   }
 
+  /** Share a file using SharedFile metadata (for pre-existing file data) */
+  shareFileMetadata(file: SharedFile): void {
+    if (!this.myNode || !this.roomInfo) return;
+
+    // Announce the file to all children
+    this.broadcastToChildren({
+      type: 'file-share-announce',
+      payload: file,
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+
+    // Also send to parent if we're a viewer/relay
+    if (this.parentConnection) {
+      this.sendSignal(this.parentConnection, {
+        type: 'file-share-announce',
+        payload: file,
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
+    }
+
+    if (this.onFileShared) this.onFileShared(file);
+  }
+
+  /** Request a file by its ID — the file owner will send chunks via data channel */
+  requestFile(fileId: string): void {
+    if (!this.myNode || !this.roomInfo) return;
+
+    // Send request to parent (which routes to the file owner)
+    const requestMsg: SignalMessage = {
+      type: 'file-request',
+      payload: { fileId, requesterId: this.myNode.peerId },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    };
+
+    if (this.parentConnection) {
+      this.sendSignal(this.parentConnection, requestMsg);
+    }
+
+    // Also check children for the file (in case the owner is below us)
+    this.broadcastToChildren(requestMsg);
+  }
+
   // ============ PUBLIC API: SCREEN SHARE ============
 
   async startScreenShare(): Promise<MediaStream | null> {
     if (!this.myNode || !this.roomInfo || this.isScreenSharing) return null;
-    if (this.myNode.role !== 'host' && this.myNode.role !== 'speaker') return null;
+    if (this.myNode.role !== 'host' && this.myNode.role !== 'co-host' && this.myNode.role !== 'speaker') return null;
 
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -2695,6 +2863,300 @@ export class FractalMeshEngine {
     if (this.onScreenShare) this.onScreenShare(false, '', '', null);
   }
 
+  // ============ PUBLIC API: SLIDE CHANGE & ANNOTATIONS ============
+
+  broadcastSlideChange(slideIndex: number): void {
+    if (!this.myNode || !this.roomInfo) return;
+    if (this.myNode.role !== 'host' && this.myNode.role !== 'co-host') return;
+
+    const msg: SignalMessage = {
+      type: 'slide-change',
+      payload: { slideIndex },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    };
+    this.broadcastToChildren(msg);
+  }
+
+  broadcastAnnotation(annotation: { type: string; x: number; y: number; data?: any }): void {
+    if (!this.myNode || !this.roomInfo) return;
+    if (this.myNode.role !== 'host' && this.myNode.role !== 'co-host') return;
+
+    const msg: SignalMessage = {
+      type: 'annotation-update',
+      payload: annotation,
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    };
+    this.broadcastToChildren(msg);
+  }
+
+  // ============ PUBLIC API: CO-HOST ============
+
+  promoteToCoHost(peerId: string): void {
+    if (!this.myNode || !this.roomInfo || this.myNode.role !== 'host') return;
+    const node = this.nodes.get(peerId);
+    if (!node) return;
+
+    node.role = 'co-host';
+    this.nodes.set(peerId, node);
+    this.coHostIds.add(peerId);
+
+    // Notify the promoted peer
+    const conn = this.childConnections.get(peerId);
+    if (conn) {
+      this.sendSignal(conn, {
+        type: 'co-host-assign',
+        payload: { peerId },
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
+    }
+
+    // Broadcast co-host assignment to all
+    this.broadcastToChildren({
+      type: 'co-host-assign',
+      payload: { peerId },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+
+    if (this.onCoHostUpdate) this.onCoHostUpdate({ peerId, isCoHost: true });
+    this.broadcastTreeUpdate();
+    this.broadcastParticipantUpdate();
+  }
+
+  demoteCoHost(peerId: string): void {
+    if (!this.myNode || !this.roomInfo || this.myNode.role !== 'host') return;
+    const node = this.nodes.get(peerId);
+    if (!node || node.role !== 'co-host') return;
+
+    node.role = 'viewer';
+    this.nodes.set(peerId, node);
+    this.coHostIds.delete(peerId);
+
+    // Notify the demoted peer
+    const conn = this.childConnections.get(peerId);
+    if (conn) {
+      this.sendSignal(conn, {
+        type: 'co-host-revoke',
+        payload: { peerId },
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
+    }
+
+    // Broadcast co-host revocation to all
+    this.broadcastToChildren({
+      type: 'co-host-revoke',
+      payload: { peerId },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+
+    if (this.onCoHostUpdate) this.onCoHostUpdate({ peerId, isCoHost: false });
+    this.broadcastTreeUpdate();
+    this.broadcastParticipantUpdate();
+  }
+
+  // ============ PUBLIC API: WAITING ROOM ============
+
+  setWaitingRoomEnabled(enabled: boolean): void {
+    this.waitingRoomEnabled = enabled;
+    if (this.onWaitingRoomUpdate) {
+      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+    }
+  }
+
+  admitFromWaitingRoom(peerId: string): void {
+    if (!this.myNode || !this.roomInfo || this.myNode.role !== 'host') return;
+
+    const waitingEntry = this.waitingList.find(w => w.peerId === peerId);
+    if (!waitingEntry) return;
+
+    // Remove from waiting list
+    this.waitingList = this.waitingList.filter(w => w.peerId !== peerId);
+
+    // Process the join now
+    const conn = waitingEntry.conn;
+    const joinPayload = waitingEntry.joinPayload;
+
+    if (conn && conn.open) {
+      // Process the join using the stored payload
+      this.processJoinRoom(conn, joinPayload);
+    }
+
+    // Send admit signal to the peer
+    this.broadcastToChildren({
+      type: 'waiting-admit',
+      payload: { peerId },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+
+    if (this.onWaitingRoomUpdate) {
+      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+    }
+  }
+
+  denyFromWaitingRoom(peerId: string): void {
+    if (!this.myNode || !this.roomInfo || this.myNode.role !== 'host') return;
+
+    this.waitingList = this.waitingList.filter(w => w.peerId !== peerId);
+
+    // Send deny signal
+    const conn = this.childConnections.get(peerId);
+    if (conn) {
+      this.sendSignal(conn, {
+        type: 'waiting-deny',
+        payload: { peerId },
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
+    }
+
+    this.broadcastToChildren({
+      type: 'waiting-deny',
+      payload: { peerId },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+
+    if (this.onWaitingRoomUpdate) {
+      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+    }
+  }
+
+  // ============ PUBLIC API: ROOM LOCK ============
+
+  lockRoom(): void {
+    if (!this.myNode || !this.roomInfo) return;
+    (this.roomInfo as any).isLocked = true;
+    this.broadcastToChildren({
+      type: 'room-lock',
+      payload: {},
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+  }
+
+  unlockRoom(): void {
+    if (!this.myNode || !this.roomInfo) return;
+    (this.roomInfo as any).isLocked = false;
+    this.broadcastToChildren({
+      type: 'room-unlock',
+      payload: {},
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+  }
+
+  // ============ PUBLIC API: MODERATION ============
+
+  muteParticipant(peerId: string): void {
+    if (!this.myNode || !this.roomInfo) return;
+    const conn = this.childConnections.get(peerId);
+    if (conn) {
+      this.sendSignal(conn, {
+        type: 'moderation-action',
+        payload: { action: 'mute', targetPeerId: peerId },
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
+    }
+    this.broadcastToChildren({
+      type: 'moderation-action',
+      payload: { action: 'mute', targetPeerId: peerId },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    });
+  }
+
+  removeParticipant(peerId: string): void {
+    if (!this.myNode || !this.roomInfo) return;
+    // Close connection to the participant
+    const conn = this.childConnections.get(peerId);
+    if (conn) {
+      this.sendSignal(conn, {
+        type: 'moderation-action',
+        payload: { action: 'remove', targetPeerId: peerId },
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
+      try { conn.close(); } catch {}
+    }
+    this.childConnections.delete(peerId);
+    this.nodes.delete(peerId);
+    if (this.myNode) {
+      this.myNode.childrenIds = this.myNode.childrenIds.filter(id => id !== peerId);
+      this.myNode.currentRelayLoad = this.myNode.childrenIds.length;
+    }
+    this.broadcastTreeUpdate();
+    this.broadcastParticipantUpdate();
+  }
+
+  // ============ PUBLIC API: HAND RAISE ============
+
+  raiseHand(): void {
+    if (!this.myNode || !this.roomInfo) return;
+    const msg: SignalMessage = {
+      type: 'hand-raise',
+      payload: { peerId: this.myNode.peerId, displayName: this.myNode.displayName },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    };
+    if (this.parentConnection) {
+      this.sendSignal(this.parentConnection, msg);
+    }
+    this.broadcastToChildren(msg);
+  }
+
+  lowerHand(): void {
+    if (!this.myNode || !this.roomInfo) return;
+    const msg: SignalMessage = {
+      type: 'hand-lower',
+      payload: { peerId: this.myNode.peerId, displayName: this.myNode.displayName },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    };
+    if (this.parentConnection) {
+      this.sendSignal(this.parentConnection, msg);
+    }
+    this.broadcastToChildren(msg);
+  }
+
   // ============ PUBLIC API: REACTIONS ============
 
   sendReaction(type: ReactionType): void {
@@ -2755,9 +3217,18 @@ export class FractalMeshEngine {
 
   getMyNode(): TreeNode | null { return this.myNode; }
   getDevice(): DeviceCapability { return this.myDevice; }
+  getRoomInfo(): RoomInfo | null { return this.roomInfo; }
+  isHostNode(): boolean { return this.myNode?.role === 'host'; }
+  isCoHostNode(): boolean { return this.myNode?.role === 'co-host'; }
+  get isCoHost(): boolean { return this.myNode?.role === 'co-host'; }
+  getParticipants(): TreeNode[] { return Array.from(this.nodes.values()); }
   getNodes(): Map<string, TreeNode> { return this.nodes; }
   getClusters(): Map<string, Cluster> { return this.clusters; }
   getNetworkHistory(): NetworkHealthSnapshot[] { return this.networkHistory; }
+  getWaitingList(): Array<{ peerId: string; displayName: string }> {
+    return this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName }));
+  }
+  isWaitingRoomEnabled(): boolean { return this.waitingRoomEnabled; }
 
   public getAttendanceLog() {
     return new Map(this.attendanceLog);
@@ -2883,11 +3354,23 @@ export class FractalMeshEngine {
     return enabled;
   }
 
+  /** Toggle audio with explicit enabled state */
+  toggleAudioEnabled(enabled: boolean) {
+    if (!this.localStream) return;
+    this.localStream.getAudioTracks().forEach(t => { t.enabled = enabled; });
+  }
+
   toggleVideo(): boolean {
     if (!this.localStream) return false;
     const enabled = !this.localStream.getVideoTracks()[0]?.enabled;
     this.localStream.getVideoTracks().forEach(t => { t.enabled = enabled; });
     return enabled;
+  }
+
+  /** Toggle video with explicit enabled state */
+  toggleVideoEnabled(enabled: boolean) {
+    if (!this.localStream) return;
+    this.localStream.getVideoTracks().forEach(t => { t.enabled = enabled; });
   }
 
   // ============ CALLBACKS SETTERS ============
@@ -2906,6 +3389,11 @@ export class FractalMeshEngine {
   setOnFileChunk(cb: (fileId: string, chunkIndex: number, totalChunks: number, data: ArrayBuffer) => void) { this.onFileChunk = cb; }
   setOnScreenShare(cb: (isSharing: boolean, sharedBy: string, sharedByName: string, stream: MediaStream | null) => void) { this.onScreenShare = cb; }
   setOnReaction(cb: (reaction: Reaction) => void) { this.onReaction = cb; }
+  setOnSlideChange(cb: (slideIndex: number) => void) { this.onSlideChange = cb; }
+  setOnAnnotation(cb: (annotation: { type: string; x: number; y: number; data?: any }) => void) { this.onAnnotation = cb; }
+  setOnCoHostUpdate(cb: (info: { peerId: string; isCoHost: boolean }) => void) { this.onCoHostUpdate = cb; }
+  setOnWaitingRoomUpdate(cb: (waitingList: Array<{ peerId: string; displayName: string }>) => void) { this.onWaitingRoomUpdate = cb; }
+  setOnHandRaiseUpdate(cb: (info: { peerId: string; displayName: string; isRaised: boolean }) => void) { this.onHandRaiseUpdate = cb; }
 
   // ============ NEW SIGNAL HANDLERS ============
 
@@ -2918,6 +3406,9 @@ export class FractalMeshEngine {
           displayName: msg.senderName,
           timestamp: msg.timestamp,
         });
+      }
+      if (this.onHandRaiseUpdate) {
+        this.onHandRaiseUpdate({ peerId: msg.senderId, displayName: msg.senderName, isRaised: true });
       }
     }
     // Forward through tree
@@ -2936,6 +3427,9 @@ export class FractalMeshEngine {
           timestamp: msg.timestamp,
         });
       }
+      if (this.onHandRaiseUpdate) {
+        this.onHandRaiseUpdate({ peerId: msg.senderId, displayName: msg.senderName, isRaised: false });
+      }
     }
     if (this.parentConnection && this.myNode?.role !== 'host') {
       this.sendSignal(this.parentConnection, msg);
@@ -2944,16 +3438,42 @@ export class FractalMeshEngine {
   }
 
   private handleWaitingJoin(msg: SignalMessage) {
-    // Forward to host through tree
-    if (this.parentConnection) this.sendSignal(this.parentConnection, msg);
+    // Host: add to waiting list and notify UI
+    if (this.myNode?.role === 'host') {
+      const { peerId, displayName } = msg.payload;
+      // Don't add duplicates
+      if (!this.waitingList.some(w => w.peerId === peerId)) {
+        this.waitingList.push({ peerId, displayName, conn: null as any, joinPayload: msg.payload });
+        if (this.onWaitingRoomUpdate) {
+          this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+        }
+      }
+    } else {
+      // Forward to host through tree
+      if (this.parentConnection) this.sendSignal(this.parentConnection, msg);
+    }
   }
 
   private handleWaitingAdmit(msg: SignalMessage) {
+    const { peerId } = msg.payload;
+    // If we're the admitted viewer, proceed with normal join
+    if (this.myNode?.peerId === peerId) {
+      // The host has admitted us — proceed with requesting stream from parent
+      if (this.parentConnection) {
+        this.requestStreamFromParent();
+      }
+      if (this.onConnectionStatus) this.onConnectionStatus('connected');
+    }
     // Forward down tree to the target peer
     this.broadcastToChildren(msg);
   }
 
   private handleWaitingDeny(msg: SignalMessage) {
+    const { peerId } = msg.payload;
+    // If we're the denied viewer
+    if (this.myNode?.peerId === peerId) {
+      if (this.onError) this.onError('Your join request was denied by the host');
+    }
     this.broadcastToChildren(msg);
   }
 
@@ -3012,6 +3532,48 @@ export class FractalMeshEngine {
         this.backupParentId = null;
       });
     } catch {}
+  }
+
+  // ============ SLIDE CHANGE & ANNOTATION HANDLERS ============
+
+  private handleSlideChange(msg: SignalMessage) {
+    const { slideIndex } = msg.payload;
+    if (this.onSlideChange) this.onSlideChange(slideIndex);
+    // Forward to children through tree
+    this.broadcastToChildren(msg);
+  }
+
+  private handleAnnotationUpdate(msg: SignalMessage) {
+    const annotation = msg.payload;
+    if (this.onAnnotation) this.onAnnotation(annotation);
+    // Forward to children through tree
+    this.broadcastToChildren(msg);
+  }
+
+  // ============ CO-HOST HANDLERS ============
+
+  private handleCoHostAssign(msg: SignalMessage) {
+    if (!this.myNode) return;
+    const { peerId } = msg.payload;
+    if (this.myNode.peerId === peerId) {
+      this.myNode.role = 'co-host';
+      this.nodes.set(this.myNode.peerId, this.myNode);
+      if (this.onCoHostUpdate) this.onCoHostUpdate({ peerId, isCoHost: true });
+    }
+    // Forward to children
+    this.broadcastToChildren(msg);
+  }
+
+  private handleCoHostRevoke(msg: SignalMessage) {
+    if (!this.myNode) return;
+    const { peerId } = msg.payload;
+    if (this.myNode.peerId === peerId) {
+      this.myNode.role = 'viewer';
+      this.nodes.set(this.myNode.peerId, this.myNode);
+      if (this.onCoHostUpdate) this.onCoHostUpdate({ peerId, isCoHost: false });
+    }
+    // Forward to children
+    this.broadcastToChildren(msg);
   }
 
   // ============ ROOT FAILOVER FROM ROOT NODES ============

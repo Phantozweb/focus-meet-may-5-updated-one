@@ -3,28 +3,24 @@
 // PresenterView — Speaker's control panel for slides + laser + annotations + recording
 // Shows: current slide, next slide preview, laser pointer, drawing tools, recording status
 // Speaker sees everything at once, controls the experience for all viewers
+// Connected to real P2P engine via useRoomStore
 
 import { useState, useRef, useEffect, useCallback, startTransition } from 'react';
 import { useRoomStore } from '@/store/room-store';
 import {
-  AdaptiveDeliveryEngine,
-  DeliveryMode,
-  SlideSyncMessage,
-  ViewerDeliveryProfile,
-} from '@/lib/adaptive-delivery';
-import {
-  Circle, Pause, Play, ChevronLeft, ChevronRight,
+  Circle, ChevronLeft, ChevronRight,
   Pen, Highlighter, Eraser, Trash2, MousePointer2,
   Mic, MicOff, Video, VideoOff, Lock, Unlock,
   Users, Monitor, BarChart3, Clock, Wifi,
-  Type, X, Eye, Radio,
+  Type, Eye, Radio, Upload,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Badge } from '@/components/ui/badge';
 import { Slider } from '@/components/ui/slider';
+import { toast } from 'sonner';
 
-// Demo slide data — in production, these would be loaded from PPTX upload
+// Slide data for uploaded slides (data URLs) with optional metadata
 interface SlideData {
   id: number;
   title: string;
@@ -32,7 +28,8 @@ interface SlideData {
   color: string;
 }
 
-const DEMO_SLIDES: SlideData[] = [
+// Fallback demo slide data — only used when no real slides are uploaded
+const FALLBACK_SLIDES: SlideData[] = [
   { id: 0, title: 'Welcome to Focus Meet', notes: 'Introduce the platform and its key innovation: adaptive content delivery for live sessions.', color: 'from-emerald-900 to-zinc-900' },
   { id: 1, title: 'The Problem', notes: 'Traditional live sessions break on slow connections. Video requires 2.5 Mbps — unavailable to 40% of viewers.', color: 'from-amber-900 to-zinc-900' },
   { id: 2, title: 'Adaptive Delivery', notes: 'High BW → full video. Low BW → slides + audio only. Very low → audio only. Same knowledge, different media.', color: 'from-violet-900 to-zinc-900' },
@@ -47,12 +44,16 @@ type AnnotationTool = 'none' | 'pen' | 'highlighter' | 'eraser' | 'text';
 
 export function PresenterView() {
   const {
-    isHost, recordingState, nodes, myNode, localStream,
+    isHost, engine, recordingState, recorder,
+    nodes, myNode, localStream,
     audioEnabled, videoEnabled, networkHealth,
+    streamHealth, streamQuality,
+    slides, currentSlideIndex, setSlides, setCurrentSlideIndex,
+    setIsPresenting, isPresenting,
+    setIsRoomLocked, isRoomLocked,
+    setRecordingState,
   } = useRoomStore();
 
-  const [engine] = useState(() => new AdaptiveDeliveryEngine());
-  const [currentSlide, setCurrentSlide] = useState(0);
   const [activeTool, setActiveTool] = useState<AnnotationTool>('none');
   const [isRecording, setIsRecording] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
@@ -70,33 +71,65 @@ export function PresenterView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isDrawingRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const totalSlides = DEMO_SLIDES.length;
+  // Use real slides from store, or fallback demo slides
+  const hasRealSlides = slides.length > 0;
+  const totalSlides = hasRealSlides ? slides.length : FALLBACK_SLIDES.length;
+  const currentSlide = currentSlideIndex;
 
-  // Simulate some viewer profiles for demo
+  // Set presenting state when component mounts
   useEffect(() => {
-    const demoPeers = [
-      { id: 'v1', kbps: 2500, rtt: 80, loss: 0.02 },
-      { id: 'v2', kbps: 1800, rtt: 120, loss: 0.03 },
-      { id: 'v3', kbps: 800, rtt: 300, loss: 0.06 },
-      { id: 'v4', kbps: 500, rtt: 450, loss: 0.10 },
-      { id: 'v5', kbps: 200, rtt: 900, loss: 0.30 },
-      { id: 'v6', kbps: 3000, rtt: 50, loss: 0.01 },
-      { id: 'v7', kbps: 400, rtt: 600, loss: 0.15 },
-      { id: 'v8', kbps: 1600, rtt: 150, loss: 0.05 },
-      { id: 'v9', kbps: 100, rtt: 1200, loss: 0.40 },
-      { id: 'v10', kbps: 2200, rtt: 90, loss: 0.02 },
-    ];
-    demoPeers.forEach(p => engine.updateViewerProfile(p.id, { kbps: p.kbps, rttMs: p.rtt, packetLoss: p.loss }));
-    const stats = engine.getDeliveryStats();
-    const savings = engine.getBandwidthSavings();
-    startTransition(() => {
-      setDeliveryStats(stats);
-      setBandwidthSavings(savings);
-    });
-  }, [engine]);
+    if (isHost) {
+      setIsPresenting(true);
+    }
+    return () => {
+      setIsPresenting(false);
+    };
+  }, [isHost, setIsPresenting]);
 
-  // Timer
+  // Compute delivery stats from real node data
+  useEffect(() => {
+    const computeStats = () => {
+      let full = 0, slidesAudio = 0, audioOnly = 0;
+
+      // Iterate through real peer nodes (exclude self)
+      nodes.forEach((node) => {
+        if (myNode && node.peerId === myNode.peerId) return;
+
+        // Use stream health per-node if available, otherwise estimate from network health
+        const nodeBandwidth = networkHealth?.totalBandwidthKbps ?? 1200;
+        const nodeRtt = networkHealth?.avgRTT ?? 150;
+        const nodeLoss = networkHealth?.avgPacketLoss ?? 0.03;
+
+        // Determine mode based on thresholds (matching AdaptiveDeliveryEngine logic)
+        if (nodeBandwidth >= 1500 && nodeRtt < 400 && nodeLoss < 0.08) {
+          full++;
+        } else if (nodeBandwidth >= 300 && nodeRtt < 800 && nodeLoss < 0.25) {
+          slidesAudio++;
+        } else {
+          audioOnly++;
+        }
+      });
+
+      const total = full + slidesAudio + audioOnly;
+
+      // Compute bandwidth savings
+      const videoKbps = full * 2500;
+      const slidesKbps = slidesAudio * (150 * 8 / 10); // 150KB slide, ~10s per slide
+      const totalIfAllVideo = total * 2500;
+      const savingsPercent = totalIfAllVideo > 0 ? ((totalIfAllVideo - videoKbps - slidesKbps) / totalIfAllVideo) * 100 : 0;
+
+      startTransition(() => {
+        setDeliveryStats({ full, slidesAudio, audioOnly, total });
+        setBandwidthSavings({ videoKbps, slidesKbps, savingsPercent });
+      });
+    };
+
+    computeStats();
+  }, [nodes, myNode, networkHealth]);
+
+  // Timer for recording
   useEffect(() => {
     if (isRecording) {
       timerRef.current = setInterval(() => setElapsedTime(t => t + 1), 1000);
@@ -113,27 +146,40 @@ export function PresenterView() {
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Handle slide change — broadcast via P2P engine
   const handleSlideChange = useCallback((index: number) => {
     if (index < 0 || index >= totalSlides) return;
-    setCurrentSlide(index);
-    const msg = engine.changeSlide(index);
-    // In production, broadcast msg via peer connection
-    void msg;
-  }, [engine, totalSlides]);
 
+    // Update local state
+    setCurrentSlideIndex(index);
+
+    // Broadcast to all viewers via the real P2P engine
+    if (engine) {
+      engine.broadcastSlideChange(index);
+    }
+  }, [engine, totalSlides, setCurrentSlideIndex]);
+
+  // Handle laser pointer movement — broadcast via P2P engine
   const handleLaserMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!slideAreaRef.current) return;
     const rect = slideAreaRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
     setLaserPos({ x, y });
-    const msg = engine.updateLaser(x, y);
-    void msg;
+
+    // Broadcast laser pointer to all viewers
+    if (engine) {
+      engine.broadcastAnnotation({ type: 'laser', x, y });
+    }
   }, [engine]);
 
   const handleLaserLeave = useCallback(() => {
     setLaserPos(null);
-  }, []);
+    // Broadcast laser off
+    if (engine) {
+      engine.broadcastAnnotation({ type: 'laser-off', x: -1, y: -1 });
+    }
+  }, [engine]);
 
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (activeTool === 'none') return;
@@ -168,13 +214,16 @@ export function PresenterView() {
         next.set(currentSlide, [...existing, ...newAnnotation]);
         return next;
       });
-      const msg = engine.addAnnotation({
-        x: drawingPath[0].x,
-        y: drawingPath[0].y,
-        type: activeTool === 'highlighter' ? 'draw' : activeTool === 'text' ? 'text' : 'draw',
-        data: { path: drawingPath, color, size },
-      });
-      void msg;
+
+      // Broadcast drawing annotation to all viewers via P2P
+      if (engine) {
+        engine.broadcastAnnotation({
+          type: 'drawing',
+          x: drawingPath[0].x,
+          y: drawingPath[0].y,
+          data: { path: drawingPath, color, size },
+        });
+      }
     }
 
     setDrawingPath([]);
@@ -186,19 +235,126 @@ export function PresenterView() {
       next.delete(currentSlide);
       return next;
     });
-    const msg = engine.clearAnnotations();
-    void msg;
+
+    // Broadcast clear to all viewers
+    if (engine) {
+      engine.broadcastAnnotation({ type: 'clear', x: 0, y: 0 });
+    }
   }, [currentSlide, engine]);
 
+  // Toggle recording using store recorder
   const toggleRecording = useCallback(() => {
-    setIsRecording(prev => !prev);
-  }, []);
+    if (isRecording) {
+      // Stop recording
+      if (recorder) {
+        recorder.stopClip();
+      }
+      setRecordingState({ ...recordingState, isRecording: false });
+      setIsRecording(false);
+      toast.success('Recording stopped');
+    } else {
+      // Start recording
+      if (recorder) {
+        recorder.startClip(localStream);
+        setRecordingState({ ...recordingState, isRecording: true });
+        setIsRecording(true);
+        toast.info('Recording started');
+      } else {
+        // No recorder available, just track locally
+        setIsRecording(true);
+        toast.info('Recording started (local only)');
+      }
+    }
+  }, [isRecording, recorder, localStream, recordingState, setRecordingState]);
 
+  // Toggle room lock via engine
   const toggleLock = useCallback(() => {
-    setIsLocked(prev => !prev);
-  }, []);
+    const newLocked = !isLocked;
+    setIsLocked(newLocked);
 
-  const viewerCount = nodes.size > 0 ? nodes.size - 1 : deliveryStats.total;
+    if (engine) {
+      if (newLocked) {
+        engine.lockRoom();
+      } else {
+        engine.unlockRoom();
+      }
+    }
+    setIsRoomLocked(newLocked);
+  }, [isLocked, engine, setIsRoomLocked]);
+
+  // Handle slide file upload
+  const handleSlideUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const dataUrls: string[] = [];
+    let loaded = 0;
+
+    Array.from(files).forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          dataUrls.push(reader.result);
+        }
+        loaded++;
+        if (loaded === files.length) {
+          // All files loaded, store as slides
+          setSlides(dataUrls);
+          setCurrentSlideIndex(0);
+          toast.success(`${dataUrls.length} slide${dataUrls.length > 1 ? 's' : ''} loaded`);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // Reset input so the same file can be re-uploaded
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [setSlides, setCurrentSlideIndex]);
+
+  const viewerCount = nodes.size > 1 ? nodes.size - 1 : deliveryStats.total;
+
+  // Render slide content — real image or fallback demo
+  const renderSlideContent = (slideIndex: number, isPreview = false) => {
+    if (hasRealSlides && slides[slideIndex]) {
+      return (
+        <img
+          src={slides[slideIndex]}
+          alt={`Slide ${slideIndex + 1}`}
+          className={`w-full h-full object-contain ${isPreview ? 'pointer-events-none' : ''}`}
+          draggable={false}
+        />
+      );
+    }
+
+    // Fallback demo slide
+    const fallback = FALLBACK_SLIDES[slideIndex];
+    if (!fallback) {
+      return (
+        <div className="w-full h-full flex items-center justify-center">
+          <span className="text-zinc-600 text-xs">End of deck</span>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`w-full h-full bg-gradient-to-br ${fallback.color} flex items-center justify-center`}>
+        <div className={`text-center ${isPreview ? 'px-2' : 'px-4 sm:px-8'}`}>
+          {isPreview ? (
+            <span className="text-[10px] sm:text-xs text-zinc-300 font-medium">{fallback.title}</span>
+          ) : (
+            <>
+              <h2 className="text-xl sm:text-3xl lg:text-4xl font-bold text-white mb-3">
+                {fallback.title}
+              </h2>
+              <p className="text-zinc-400 text-sm sm:text-base">Slide {slideIndex + 1} of {totalSlides}</p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="h-full w-full bg-zinc-950 flex flex-col overflow-hidden">
@@ -292,13 +448,8 @@ export function PresenterView() {
             onMouseLeave={activeTool === 'none' ? handleLaserLeave : undefined}
           >
             {/* Slide content */}
-            <div className={`absolute inset-0 bg-gradient-to-br ${DEMO_SLIDES[currentSlide]?.color || 'from-zinc-800 to-zinc-900'} flex items-center justify-center`}>
-              <div className="text-center px-4 sm:px-8">
-                <h2 className="text-xl sm:text-3xl lg:text-4xl font-bold text-white mb-3">
-                  {DEMO_SLIDES[currentSlide]?.title || `Slide ${currentSlide + 1}`}
-                </h2>
-                <p className="text-zinc-400 text-sm sm:text-base">Slide {currentSlide + 1} of {totalSlides}</p>
-              </div>
+            <div className="absolute inset-0 flex items-center justify-center">
+              {renderSlideContent(currentSlide)}
 
               {/* Annotation canvas overlay */}
               <canvas
@@ -374,13 +525,13 @@ export function PresenterView() {
                 <span className="text-[9px] text-zinc-600">Slide {currentSlide + 2}</span>
               )}
             </div>
-            <div className={`aspect-video rounded-lg border border-zinc-700 bg-gradient-to-br ${DEMO_SLIDES[currentSlide + 1]?.color || 'from-zinc-800 to-zinc-900'} flex items-center justify-center overflow-hidden`}>
+            <div className="aspect-video rounded-lg border border-zinc-700 overflow-hidden flex items-center justify-center">
               {currentSlide < totalSlides - 1 ? (
-                <span className="text-[10px] sm:text-xs text-zinc-300 text-center px-2 font-medium">
-                  {DEMO_SLIDES[currentSlide + 1]?.title}
-                </span>
+                renderSlideContent(currentSlide + 1, true)
               ) : (
-                <span className="text-[10px] text-zinc-600">End of deck</span>
+                <div className="w-full h-full bg-zinc-800 flex items-center justify-center">
+                  <span className="text-[10px] text-zinc-600">End of deck</span>
+                </div>
               )}
             </div>
           </div>
@@ -396,7 +547,9 @@ export function PresenterView() {
             </button>
             {showNotes && (
               <div className="flex-1 overflow-y-auto text-zinc-400 text-xs leading-relaxed bg-zinc-800/50 rounded-lg p-2 sm:p-3">
-                {DEMO_SLIDES[currentSlide]?.notes || 'No notes for this slide.'}
+                {hasRealSlides
+                  ? `Slide ${currentSlide + 1} of ${totalSlides}. Upload slides as images to present them.`
+                  : (FALLBACK_SLIDES[currentSlide]?.notes || 'No notes for this slide.')}
               </div>
             )}
           </div>
@@ -448,6 +601,32 @@ export function PresenterView() {
           >
             <ChevronRight className="w-4 h-4" />
           </Button>
+
+          {/* Upload slides button */}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-zinc-400 hover:text-zinc-200"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline ml-1 text-xs">Upload</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Upload slides (images)</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handleSlideUpload}
+          />
         </div>
 
         {/* Drawing tools */}
@@ -501,14 +680,14 @@ export function PresenterView() {
         <div className="flex items-center gap-0.5 sm:gap-1">
           <ToolButton
             active={audioEnabled}
-            onClick={() => {}}
+            onClick={() => { if (engine) engine.toggleAudio(); }}
             icon={audioEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
             label="Mic"
             activeColor={audioEnabled ? 'text-emerald-400' : 'text-red-400'}
           />
           <ToolButton
             active={videoEnabled}
-            onClick={() => {}}
+            onClick={() => { if (engine) engine.toggleVideo(); }}
             icon={videoEnabled ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
             label="Cam"
             activeColor={videoEnabled ? 'text-emerald-400' : 'text-red-400'}

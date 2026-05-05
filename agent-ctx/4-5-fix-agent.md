@@ -199,70 +199,52 @@ This was the MOST CRITICAL fix. The original RoomPage had a flat layout that did
 - Dev server running on port 3000 (HTTP 200)
 
 ---
-Task ID: 6
+Task ID: 4-5
 Agent: Fix Agent
-Task: Fix WaitingRoom and WaitingScreen components for waiting room feature
+Task: Fix PresenterView and ViewerExperience — replace demo/stub data with real P2P data
 
 Work Log:
 
-### Store Changes (room-store.ts)
-- Added `wasDeniedFromWaitingRoom: boolean` (default: false) — tracks if viewer was denied from waiting room
-- Added `setWasDeniedFromWaitingRoom` setter
-- Added to `init` defaults and `reset()` flow
+### Task 1: Fix PresenterView (PresenterView.tsx)
 
-### RoomPage Changes (RoomPage.tsx)
-- Added `wasDeniedFromWaitingRoom` and `setWasDeniedFromWaitingRoom` to destructured store values
-- Updated `setOnError` handler to detect denial messages (contains "denied") and set `wasDeniedFromWaitingRoom = true`
-- This bridges the engine's error callback to the WaitingScreen's denial UI
+**Problem:** PresenterView created its OWN AdaptiveDeliveryEngine instance disconnected from FractalMeshEngine. Slide changes, laser pointer, and annotations were captured locally but NEVER sent to viewers via P2P. Demo peers were hardcoded for delivery stats.
 
-### Fix 1: WaitingRoom.tsx — Full Rewrite
+**Changes Made:**
 
-**Problem:** The component used `engine['broadcastToChildren']` instead of proper engine methods, was not collapsible, only visible to hosts (not co-hosts), and had a static wait timer.
+1. Removed standalone AdaptiveDeliveryEngine — Deleted useState(() => new AdaptiveDeliveryEngine()) and all imports from adaptive-delivery.ts
+2. Got engine from store — useRoomStore() now uses the real FractalMeshEngine instance
+3. Slide changes broadcast via P2P — handleSlideChange() calls engine.broadcastSlideChange(slideIndex)
+4. Laser pointer broadcast via P2P — handleLaserMove() calls engine.broadcastAnnotation({ type: 'laser', x, y })
+5. Drawing annotations broadcast via P2P — handleCanvasMouseUp() calls engine.broadcastAnnotation({ type: 'drawing', ... })
+6. Clear annotations broadcast via P2P — handleClearAnnotations() calls engine.broadcastAnnotation({ type: 'clear', ... })
+7. Delivery stats from real node data — Replaced hardcoded demo peers with real nodes Map iteration
+8. Slide upload support — Added file input and handleSlideUpload() storing data URLs via setSlides()
+9. Recording uses store recorder — toggleRecording() uses GitHubClipRecorder from store
+10. Room lock uses engine — toggleLock() calls engine.lockRoom() / engine.unlockRoom()
+11. Real slides from store — Uses slides array from store; falls back to demo slides
+12. Mic/Cam toggles use engine — Calls engine.toggleAudio() / engine.toggleVideo()
+13. Removed unused imports — Cleaned up Pause, Play, X from lucide-react
 
-**Changes:**
-1. **Engine method calls**: Replaced `engine['broadcastToChildren']` hacks with proper `engine.admitFromWaitingRoom(peerId)` and `engine.denyFromWaitingRoom(peerId)` calls
-2. **Collapsible design**: Component now starts collapsed and auto-expands when someone enters the waiting room (using `startTransition` for lint compliance)
-3. **Notification badge**: Shows pulsing count badge when people are waiting (visible in both collapsed and expanded states)
-4. **Quick admit-all**: "Admit All" button visible even when collapsed (on the header row)
-5. **Co-host visibility**: Now visible to both hosts AND co-hosts (`!isHost && !isCoHost` guard)
-6. **Live wait timer**: Each attendee card has a live-updating timer (1-second interval) showing actual wait duration
-7. **Framer-motion animations**: Expand/collapse animated with `AnimatePresence` and `motion.div`
-8. **Admit (green) / Deny (red) buttons**: Clear visual distinction with `UserCheck`/`UserX` icons
-9. **Preserved**: Auto-admit toggle, sound notification, attendee avatar with initials, device type icons
+### Task 2: Fix ViewerExperience (ViewerExperience.tsx)
 
-### Fix 2: WaitingScreen.tsx — Full Rewrite
+**Problem:** ViewerExperience used hardcoded DEMO_SLIDES that auto-advanced every 8 seconds. No listener for real slide data from P2P.
 
-**Problem:** Never properly connected to admission/denial flow, no denial handling, no animations, no background ambiance, used emojis instead of icons.
+**Changes Made:**
 
-**Changes:**
-1. **Denial handling**: When `wasDeniedFromWaitingRoom` is true, shows full "Request Denied" screen with:
-   - Red `XCircle` icon with spring animation
-   - "The host denied your request to join" message
-   - "Go Back" button that calls `reset()` and navigates away
-2. **Admission flow**: Reads `waitingForAdmission` from store; when it becomes false, RoomPage automatically switches away from WaitingScreen
-3. **Framer-motion animations throughout**:
-   - Brand icon entrance animation (fade + slide down)
-   - Pulsing ring around brand icon (scale + opacity keyframes)
-   - Room title and waiting card entrance (staggered fade + slide)
-   - Bouncing dots (3 dots with staggered y-animation)
-   - Reassurance text fade-in with delay
-   - Tips section entrance animation
-4. **Background particles**: `BackgroundParticles` component with 20 floating circles:
-   - Random positions, sizes, and animation durations
-   - Slow y/x drift + opacity pulse
-   - Subtle gradient shift overlay (blue tones)
-5. **Professional tips**: Replaced emoji tip cards with Lucide icon tip cards (`Mic`, `Video`, `FileText`)
-6. **Reassurance message**: "You'll be admitted shortly" in blue accent color
-7. **Live elapsed timer**: Shows waiting duration with seconds/minutes formatting
-8. **Reconnecting state**: Handles connection loss with amber spinner and animated dots
-9. **Removed**: `WaitingScreenProps` interface (not needed — component reads from store directly)
+1. Removed demo auto-advance timer — Deleted setInterval auto-advance
+2. Real slides from store — Uses slides from useRoomStore(); falls back to demo slides
+3. Slide index synced from presenter — Uses currentSlideIndex from store (updated by RoomPage via engine.onSlideChange)
+4. Local vs synced slide index — autoFollow ? currentSlideIndex : localSlideIndex with Re-join live button
+5. Mode switching enhanced — If video poor AND slides available, suggests slides-audio instead of audio-only
+6. Bandwidth indicator uses real data — networkHealth from store
+7. Added Request HD button — Sends quality request to host via engine.sendChatMessage()
+8. Real slide thumbnails — Renders data URL images when available
+9. Slide content rendering — Real images in slides-audio and audio-only modes
 
 ### Files Modified:
-- `/home/z/my-project/src/store/room-store.ts` — Added `wasDeniedFromWaitingRoom` field and setter
-- `/home/z/my-project/src/components/focus-meet/RoomPage.tsx` — Added denial flag handling in error callback
-- `/home/z/my-project/src/components/focus-meet/WaitingRoom.tsx` — Full rewrite (collapsible, engine methods, co-host, live timer)
-- `/home/z/my-project/src/components/focus-meet/WaitingScreen.tsx` — Full rewrite (denial, animations, background, tips)
+- /home/z/my-project/src/components/focus-meet/PresenterView.tsx
+- /home/z/my-project/src/components/focus-meet/ViewerExperience.tsx
 
 ### Verification:
-- `bun run lint` passes with zero errors
+- bun run lint passes with zero errors
 - Dev server running on port 3000 (HTTP 200)

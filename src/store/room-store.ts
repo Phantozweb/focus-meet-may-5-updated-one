@@ -76,6 +76,22 @@ interface RoomState {
   currentSlideIndex: number;
   isPresenting: boolean;
 
+  // Host / co-host
+  isCoHost: boolean;
+  coHosts: string[];
+
+  // Waiting room
+  isWaitingRoomEnabled: boolean;
+  waitingForAdmission: boolean;
+  wasDeniedFromWaitingRoom: boolean;
+
+  // Room lock
+  isRoomLocked: boolean;
+
+  // Callbacks
+  slideChangeCallback: ((slideIndex: number) => void) | null;
+  annotationCallback: ((annotation: { type: string; x: number; y: number; data?: any }) => void) | null;
+
   // Setters
   setEngine: (e: FractalMeshEngine) => void;
   setInRoom: (v: boolean) => void; setIsHost: (v: boolean) => void;
@@ -136,6 +152,22 @@ interface RoomState {
   setCurrentSlideIndex: (index: number) => void;
   setIsPresenting: (presenting: boolean) => void;
 
+  // Host / co-host
+  setIsCoHost: (v: boolean) => void;
+  setCoHosts: (v: string[]) => void;
+
+  // Waiting room
+  setWaitingRoomEnabled: (v: boolean) => void;
+  setWaitingForAdmission: (v: boolean) => void;
+  setWasDeniedFromWaitingRoom: (v: boolean) => void;
+
+  // Room lock
+  setIsRoomLocked: (v: boolean) => void;
+
+  // Callbacks
+  setSlideChangeCallback: (cb: ((slideIndex: number) => void) | null) => void;
+  setAnnotationCallback: (cb: ((annotation: { type: string; x: number; y: number; data?: any }) => void) | null) => void;
+
   reset: () => void;
 }
 
@@ -169,6 +201,14 @@ const init = {
   slides: [] as string[],
   currentSlideIndex: 0,
   isPresenting: false,
+  isCoHost: false,
+  coHosts: [] as string[],
+  isWaitingRoomEnabled: true,
+  waitingForAdmission: false,
+  wasDeniedFromWaitingRoom: false,
+  isRoomLocked: false,
+  slideChangeCallback: null as ((slideIndex: number) => void) | null,
+  annotationCallback: null as ((annotation: { type: string; x: number; y: number; data?: any }) => void) | null,
 };
 
 export const useRoomStore = create<RoomState>((set, get) => ({
@@ -268,6 +308,22 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setSlides: (slides) => set({ slides }),
   setCurrentSlideIndex: (currentSlideIndex) => set({ currentSlideIndex }),
   setIsPresenting: (isPresenting) => set({ isPresenting }),
+
+  // Host / co-host
+  setIsCoHost: (isCoHost) => set({ isCoHost }),
+  setCoHosts: (coHosts) => set({ coHosts }),
+
+  // Waiting room
+  setWaitingRoomEnabled: (isWaitingRoomEnabled) => set({ isWaitingRoomEnabled }),
+  setWaitingForAdmission: (waitingForAdmission) => set({ waitingForAdmission }),
+  setWasDeniedFromWaitingRoom: (wasDeniedFromWaitingRoom) => set({ wasDeniedFromWaitingRoom }),
+
+  // Room lock
+  setIsRoomLocked: (isRoomLocked) => set({ isRoomLocked }),
+
+  // Callbacks
+  setSlideChangeCallback: (slideChangeCallback) => set({ slideChangeCallback }),
+  setAnnotationCallback: (annotationCallback) => set({ annotationCallback }),
 
   reset: () => {
     const { engine, recorder } = get();
