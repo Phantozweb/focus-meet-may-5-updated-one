@@ -18,6 +18,7 @@ import { ViewerExperience } from './ViewerExperience';
 import { WaitingRoom } from './WaitingRoom';
 import { WaitingScreen } from './WaitingScreen';
 import { HostControls } from './HostControls';
+import { TreeHealthDashboard } from './TreeHealthDashboard';
 import {
   ChatMessage, SpeakerRequest, TreeNode, NodeStatus, StreamHealth,
   NetworkHealthSnapshot, SharedFile, Reaction, ReactionType,
@@ -72,6 +73,8 @@ export function RoomPage() {
 
   const engineRef = useRef<FractalMeshEngine | null>(null);
   const initRef = useRef(false);
+  const coHostsRef = useRef<string[]>([]);
+  const waitingRoomRef = useRef<WaitingAttendee[]>([]);
   const [streamDuration, setStreamDuration] = useState(0);
   const durRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [copied, setCopied] = useState(false);
@@ -81,6 +84,12 @@ export function RoomPage() {
   const videoProcessorRef = useRef<VideoFrameProcessor | null>(null);
   const [floatingReactions, setFloatingReactions] = useState<{ id: string; type: ReactionType; x: number }[]>([]);
   const [isWaitingRoomPanelOpen, setIsWaitingRoomPanelOpen] = useState(false);
+
+  // Keep refs in sync with state (must be in useEffect to avoid render-time ref access)
+  useEffect(() => {
+    coHostsRef.current = coHosts;
+    waitingRoomRef.current = waitingRoom;
+  });
 
   // Timer
   useEffect(() => {
@@ -238,9 +247,10 @@ export function RoomPage() {
 
       // Waiting room update callback (host receives waiting list updates)
       eng.setOnWaitingRoomUpdate((attendees: Array<{ peerId: string; displayName: string; device: DeviceCapability | null }>) => {
+        const currentWaitingRoom = waitingRoomRef.current;
         // Update the waiting room list
         attendees.forEach(a => {
-          if (!waitingRoom.some(w => w.peerId === a.peerId)) {
+          if (!currentWaitingRoom.some(w => w.peerId === a.peerId)) {
             addWaitingAttendee({
               peerId: a.peerId,
               displayName: a.displayName,
@@ -255,7 +265,7 @@ export function RoomPage() {
           }
         });
         // Remove attendees who are no longer in the waiting list (they were admitted/denied)
-        waitingRoom.forEach(existing => {
+        currentWaitingRoom.forEach(existing => {
           if (!attendees.some(a => a.peerId === existing.peerId)) {
             removeWaitingAttendee(existing.peerId);
           }
@@ -264,13 +274,14 @@ export function RoomPage() {
 
       // Co-host update callback
       eng.setOnCoHostUpdate((info: { peerId: string; isCoHost: boolean }) => {
+        const currentCoHosts = coHostsRef.current;
         if (info.isCoHost) {
-          setCoHosts([...coHosts.filter(id => id !== info.peerId), info.peerId]);
+          setCoHosts([...currentCoHosts.filter(id => id !== info.peerId), info.peerId]);
           if (info.peerId === eng.getMyNode()?.peerId) {
             setIsCoHost(true);
           }
         } else {
-          setCoHosts(coHosts.filter(id => id !== info.peerId));
+          setCoHosts(currentCoHosts.filter(id => id !== info.peerId));
           if (info.peerId === eng.getMyNode()?.peerId) {
             setIsCoHost(false);
           }
@@ -522,6 +533,17 @@ export function RoomPage() {
           </div>
         </div>
 
+        {/* Tree Health Status Bar */}
+        <div className="flex items-center gap-3 px-3 py-1.5 bg-emerald-950/30 border-b border-emerald-800/30 text-xs overflow-x-auto">
+          <span className="text-emerald-400 whitespace-nowrap">🌳 Roots: {roomInfo?.rootNodes?.length || 0}</span>
+          <span className="text-emerald-400 whitespace-nowrap">👥 Viewers: {nodes.size - 1}</span>
+          <span className="text-emerald-400 whitespace-nowrap">📐 Depth: {nodes.size > 0 ? Math.max(...Array.from(nodes.values()).map(n => n.depth)) : 0}</span>
+          <span className="text-emerald-400 whitespace-nowrap">📡 Upload: {engine?.getHostBandwidthInfo()?.uploadKbps || 0} kbps</span>
+          {engine?.getHostBandwidthInfo()?.isLowBandwidth && (
+            <span className="text-amber-400 whitespace-nowrap">⚡ Low BW</span>
+          )}
+        </div>
+
         {/* Screen share indicator */}
         {screenShare.isSharing && (
           <div className="flex items-center justify-center gap-2 px-4 py-1 bg-blue-600/20 border-b border-blue-500/30 text-blue-300 text-xs">
@@ -543,8 +565,12 @@ export function RoomPage() {
             )}
           </div>
 
-          {/* Right side panel: WaitingRoom (collapsible) + Chat + Participants + Files */}
-          <div className="hidden sm:flex flex-col w-80 border-l border-zinc-800 bg-zinc-900/50 flex-shrink-0">
+          {/* Right side panel: TreeHealth + WaitingRoom + Chat + Participants + Files */}
+          <div className="hidden sm:flex flex-col w-80 border-l border-zinc-800 bg-zinc-900/50 flex-shrink-0 overflow-y-auto custom-scrollbar">
+            {/* Tree Health Dashboard — always visible for hosts */}
+            <div className="border-b border-zinc-800">
+              <TreeHealthDashboard />
+            </div>
             {/* Waiting Room Panel (collapsible) */}
             {isWaitingRoomPanelOpen && (
               <div className="border-b border-zinc-800 max-h-64 overflow-y-auto">

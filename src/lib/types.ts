@@ -364,10 +364,10 @@ export const BRANCHING_FACTOR_TARGET = 5;        // Target branching factor for 
 // ============ ROOT ARCHITECTURE ============
 // Invisible dummy relay nodes that keep the webinar alive
 
-export const ROOT_NODE_TARGET = 7;               // Target 7 root nodes (5-10 range)
+export const ROOT_NODE_TARGET = 12;              // Target 12 roots for 1000+ users
 export const ROOT_NODE_MIN = 5;                   // Minimum 5 roots before stable
-export const ROOT_NODE_MAX = 10;                  // Maximum 10 root nodes
-export const SUB_ROOT_TARGET = 5;                 // Target 5 sub-root backup nodes
+export const ROOT_NODE_MAX = 20;                  // Allow up to 20 roots for massive webinars
+export const SUB_ROOT_TARGET = 10;                // More sub-root backups for 1000+ users
 export const ROOT_SELECTION_INTERVAL = 30000;     // Re-evaluate roots every 30s
 export const ROOT_MIN_UPTIME_MS = 20000;          // Must be connected 20s before eligible
 export const ROOT_MIN_BANDWIDTH_KBPS = 2000;      // Minimum 2Mbps upload to be a root
@@ -376,8 +376,8 @@ export const ROOT_BUFFER_SIZE_MS = 10000;         // Roots buffer 10s of stream 
 export const ROOT_FAILOVER_TIMEOUT_MS = 5000;     // 5s to detect host left and failover
 
 // Low-bandwidth host adaptive settings
-export const LOW_BANDWIDTH_THRESHOLD_KBPS = 5000; // Host upload < 5 Mbps = low bandwidth
-export const LOW_BANDWIDTH_MAX_ROOTS = 3;         // Fewer roots for low-bandwidth hosts
+export const LOW_BANDWIDTH_THRESHOLD_KBPS = 3000; // More aggressive detection for mobile hosts
+export const LOW_BANDWIDTH_MAX_ROOTS = 5;         // Even low-bandwidth hosts need some roots
 export const LOW_BANDWIDTH_HOST_QUALITY: StreamQuality = 'medium'; // Start at 480p for low-bw host
 export const LOW_BANDWIDTH_ADAPTIVE_ROOTS = true;  // Dynamically adjust root count based on host bandwidth
 export const HOST_BANDWIDTH_PROBE_INTERVAL = 15000; // Re-probe host bandwidth every 15s

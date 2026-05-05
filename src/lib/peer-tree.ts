@@ -88,6 +88,8 @@ import {
 } from './types';
 import { TreeHoneycombEngine } from './tree-honeycomb-engine';
 import { CoopScheduler, coopScheduler } from './coop-scheduler';
+import { AdaptiveDeliveryEngine } from './adaptive-delivery';
+import { ReliableChannel, type ReliableMessage, type AckMessage } from './reliable-channel';
 
 type PeerInstance = any;
 type DataConnection = any;
@@ -214,6 +216,12 @@ export class FractalMeshEngine {
   private hostBandwidthProbeTimer: ReturnType<typeof setInterval> | null = null;
   private scheduler: CoopScheduler = coopScheduler;
 
+  // Adaptive delivery engine — determines content delivery mode per viewer
+  private adaptiveDelivery: AdaptiveDeliveryEngine | null = null;
+
+  // Reliable channel — ACK-based reliable messaging for critical signals
+  private reliableChannel: ReliableChannel | null = null;
+
   /** Set a worker proxy to offload signaling/bandwidth calculations to web workers */
   setWorkerProxy(proxy: any) {
     this.workerProxy = proxy;
@@ -329,6 +337,27 @@ export class FractalMeshEngine {
 
     // Initialize Tree-Honeycomb engine for the host
     this.honeycombEngine = new TreeHoneycombEngine(peerId);
+
+    // Initialize Adaptive Delivery Engine for bandwidth-aware content delivery
+    this.adaptiveDelivery = new AdaptiveDeliveryEngine();
+
+    // Initialize Reliable Channel for ACK-based critical signal delivery
+    this.reliableChannel = new ReliableChannel();
+    this.reliableChannel.setOnSend((msg: ReliableMessage) => this.broadcastToChildrenRaw(msg));
+    this.reliableChannel.setOnDeliver((msg: ReliableMessage) => {
+      // Convert ReliableMessage back to SignalMessage and process locally
+      const signalMsg: SignalMessage = {
+        type: msg.type,
+        payload: msg.payload,
+        senderId: msg.senderId,
+        senderName: '',
+        roomId: this.roomInfo?.roomId || '',
+        timestamp: msg.timestamp,
+      };
+      // Process locally as if we received it
+      const dummyConn = null as any;
+      this.handleSignal(dummyConn, signalMsg);
+    });
 
     this.myNode = this.createNode(peerId, hostName, 'host', 'supernode', null, 0, rootClusterId);
     this.myNode.isClusterHead = true;
@@ -554,17 +583,49 @@ export class FractalMeshEngine {
   // IMPROVED v3: Weighted random selection among top N candidates
   // This prevents the "hot relay" problem where one node gets all children
 
+  /** Find the best root node for assigning a new child. O(roots) instead of O(n).
+   *  @param excludePeerId Optionally exclude a specific root (e.g., the one that just disconnected)
+   */
+  private selectBestRoot(excludePeerId?: string): TreeNode | null {
+    let bestRoot: TreeNode | null = null;
+    let bestScore = -Infinity;
+
+    for (const rootId of this.rootNodes) {
+      const root = this.nodes.get(rootId);
+      if (!root || root.status !== 'connected') continue;
+      if (root.peerId === excludePeerId) continue;
+      if (root.currentRelayLoad >= root.maxRelayCapacity) continue;
+
+      const loadRatio = root.currentRelayLoad / Math.max(1, root.maxRelayCapacity);
+      const score = (1 - loadRatio) * 50 + root.bandwidth.estimatedUpKbps / 100 + (100 - root.bandwidth.rttMs) * 0.2;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestRoot = root;
+      }
+    }
+
+    return bestRoot;
+  }
+
   private selectBestRelay(newNodeDevice: DeviceCapability): TreeNode | null {
     if (!this.myNode) return null;
 
     // Collect all eligible relay candidates
     const candidates: { node: TreeNode; score: number }[] = [];
 
+    // FAST PATH: For large rooms, only consider roots, cluster heads, and high-tier relays
+    // This reduces O(n) to O(roots + cluster_heads) ≈ O(20) for 1000+ user rooms
+    const considerOnlyHighTier = this.nodes.size > 50;
+
     this.nodes.forEach((node) => {
       if (!node.canRelay) return;
       if (node.currentRelayLoad >= node.maxRelayCapacity) return;
       if (node.status !== 'connected') return;
       if (node.depth >= 7) return;
+
+      // For large rooms, only consider roots, cluster heads, and high-tier relays
+      if (considerOnlyHighTier && !node.isRoot && !node.isClusterHead && node.maxRelayCapacity < 6) return;
 
       const score = this.calculateRelayScore(node, newNodeDevice);
       candidates.push({ node, score });
@@ -887,6 +948,12 @@ export class FractalMeshEngine {
       case 'annotation-update': this.handleAnnotationUpdate(msg); break;
       case 'co-host-assign': this.handleCoHostAssign(msg); break;
       case 'co-host-revoke': this.handleCoHostRevoke(msg); break;
+      case 'reliable-message': this.handleReliableMessage(msg); break;
+      case 'quality-request':
+        if (this.myNode?.role === 'host') {
+          console.log(`[FocusMeet] Quality request from ${msg.senderName}: ${msg.payload?.requestedQuality}`);
+        }
+        break;
       default:
         console.warn('[FractalMesh] Unhandled signal type:', msg.type);
     }
@@ -964,8 +1031,27 @@ export class FractalMeshEngine {
 
     const { displayName, peerId, device, maxRelayCapacity } = payload;
 
-    const bestRelay = this.selectBestRelay(device || this.myDevice);
-    const parentNode = bestRelay || this.myNode;
+    // NEW: If we have root nodes, assign to the least-loaded root, NOT the host.
+    // This is critical for scaling — roots receive the stream directly from the host
+    // and relay it to their children, offloading the host.
+    let parentNode: TreeNode;
+
+    if (this.rootNodes.size > 0 && this.myNode) {
+      // Find the least-loaded root
+      const bestRoot = this.selectBestRoot();
+      if (bestRoot) {
+        parentNode = bestRoot;
+      } else {
+        // All roots are full — use regular relay selection
+        const bestRelay = this.selectBestRelay(device || this.myDevice);
+        parentNode = bestRelay || this.myNode;
+      }
+    } else {
+      // No roots yet — use regular relay selection
+      const bestRelay = this.selectBestRelay(device || this.myDevice);
+      parentNode = bestRelay || this.myNode;
+    }
+
     const depth = parentNode.depth + 1;
     const clusterId = parentNode.clusterId;
 
@@ -1181,7 +1267,16 @@ export class FractalMeshEngine {
 
     // If we have a stream, relay it to this new child
     const stream = this.incomingStream || this.localStream;
-    if (stream) this.callNodeWithStream(childPeerId, stream);
+    if (stream) {
+      this.callNodeWithStream(childPeerId, stream);
+    } else {
+      // Retry after a short delay — the stream might not have arrived yet (race condition
+      // between the host's call and the root receiving the assign-parent signal)
+      setTimeout(() => {
+        const s = this.incomingStream || this.localStream;
+        if (s) this.callNodeWithStream(childPeerId, s);
+      }, 2000);
+    }
 
     if (this.onTreeUpdate) this.onTreeUpdate(this.nodes);
   }
@@ -1420,6 +1515,36 @@ export class FractalMeshEngine {
     const packetLoss = stats.packetsSent > 0 ? stats.packetsLost / stats.packetsSent : 0;
     const bitrateKbps = stats.bitrate / 1000;
 
+    // Use adaptive delivery engine to determine delivery mode for this viewer
+    if (this.adaptiveDelivery) {
+      const deliveryMode = this.adaptiveDelivery.getDeliveryMode(bitrateKbps, stats.currentRoundTripTime * 1000, packetLoss);
+      // Map delivery mode to quality: 'full' → keep current, 'slides-audio' → 480p, 'audio-only' → audio-only
+      if (deliveryMode === 'audio-only') {
+        const conn = this.childConnections.get(node.peerId);
+        if (conn) {
+          this.sendSignal(conn, {
+            type: 'quality-adapt',
+            payload: { quality: 'audio-only', profile: DYNAMIC_QUALITY_LEVELS[3] },
+            senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+            roomId: this.roomInfo.roomId, timestamp: Date.now(),
+          });
+        }
+        return;
+      }
+      if (deliveryMode === 'slides-audio' && bitrateKbps < 600) {
+        const conn = this.childConnections.get(node.peerId);
+        if (conn) {
+          this.sendSignal(conn, {
+            type: 'quality-adapt',
+            payload: { quality: 'low', profile: DYNAMIC_QUALITY_LEVELS[2] },
+            senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+            roomId: this.roomInfo.roomId, timestamp: Date.now(),
+          });
+        }
+        return;
+      }
+    }
+
     // STABILITY SAFEGUARD: If bitrate is critically low, force audio-only to prevent total break
     if (bitrateKbps < STREAM_MIN_BITRATE_KBPS && packetLoss > 0.2) {
       const conn = this.childConnections.get(node.peerId);
@@ -1574,6 +1699,15 @@ export class FractalMeshEngine {
       this.nodes.set(probe.peerId, node);
     }
 
+    // Update adaptive delivery engine with viewer bandwidth profile
+    if (this.adaptiveDelivery) {
+      this.adaptiveDelivery.updateViewerProfile(probe.peerId, {
+        kbps: probe.estimatedDownKbps,
+        rttMs: probe.rttMs,
+        packetLoss: probe.packetLoss,
+      });
+    }
+
     // Handle backup parent request
     if (msg.payload.requestBackupParent && this.myNode && this.roomInfo) {
       const requester = this.nodes.get(msg.senderId);
@@ -1676,6 +1810,17 @@ export class FractalMeshEngine {
   }
 
   // ============ CHAT ============
+
+  /** Send a quality request signal up to the host (viewer → parent → host) */
+  sendQualityRequest(quality: string) {
+    if (!this.parentConnection || !this.myNode) return;
+    this.sendSignal(this.parentConnection, {
+      type: 'quality-request',
+      payload: { requestedQuality: quality, peerId: this.myNode.peerId },
+      senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+      roomId: this.roomInfo?.roomId || '', timestamp: Date.now(),
+    });
+  }
 
   sendChatMessage(content: string) {
     if (!this.myNode || !this.roomInfo) return;
@@ -2355,6 +2500,74 @@ export class FractalMeshEngine {
       }
     }
 
+    // NEW: If this was a ROOT node, trigger root-specific healing.
+    // The disconnected root's children must be reassigned to OTHER roots (not the host),
+    // and a sub-root should be promoted to fill the gap.
+    if (node.isRoot) {
+      this.rootNodes.delete(peerId);
+      this.subRootNodes.delete(peerId);
+
+      // Heal the honeycomb topology
+      if (this.honeycombEngine) {
+        this.honeycombEngine.healDeadRoot(peerId);
+      }
+
+      // Promote a sub-root to fill the gap
+      for (const subRootId of this.subRootNodes) {
+        const subNode = this.nodes.get(subRootId);
+        if (subNode && subNode.status === 'connected') {
+          this.promoteToRoot(subNode);
+          break;
+        }
+      }
+
+      // Reassign the dead root's children to other roots (not the host if possible)
+      const rootOrphans = [...node.childrenIds];
+      for (const orphanId of rootOrphans) {
+        const orphan = this.nodes.get(orphanId);
+        if (!orphan) continue;
+
+        // Find best ROOT for this orphan (NOT the host if possible)
+        const bestRoot = this.selectBestRoot(peerId);
+        if (bestRoot && this.myNode && this.roomInfo) {
+          orphan.parentId = bestRoot.peerId;
+          orphan.depth = bestRoot.depth + 1;
+          orphan.status = 'reconnecting';
+          bestRoot.childrenIds.push(orphanId);
+          bestRoot.currentRelayLoad = bestRoot.childrenIds.length;
+          this.nodes.set(bestRoot.peerId, bestRoot);
+          this.nodes.set(orphanId, orphan);
+
+          // Tell the root to accept this child
+          const rootConn = this.childConnections.get(bestRoot.peerId);
+          if (rootConn) {
+            this.sendSignal(rootConn, {
+              type: 'assign-parent',
+              payload: { childPeerId: orphanId, childDisplayName: orphan.displayName },
+              senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+              roomId: this.roomInfo.roomId, timestamp: Date.now(),
+            });
+          }
+
+          // Tell the orphan to reconnect to the new root
+          const orphanConn = this.childConnections.get(orphanId);
+          if (orphanConn) {
+            this.sendSignal(orphanConn, {
+              type: 'reassign-parent',
+              payload: { newParentId: bestRoot.peerId },
+              senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+              roomId: this.roomInfo.roomId, timestamp: Date.now(),
+            });
+          }
+        }
+      }
+
+      if (this.roomInfo) {
+        this.roomInfo.rootNodes = Array.from(this.rootNodes);
+        this.roomInfo.subRootNodes = Array.from(this.subRootNodes);
+      }
+    }
+
     // Remove node
     this.nodes.delete(peerId);
     this.childConnections.delete(peerId);
@@ -3017,15 +3230,8 @@ export class FractalMeshEngine {
       // Process the join — this adds the viewer as a child
       this.processJoinRoom(conn, joinPayload);
 
-      // Send admit signal DIRECTLY to the admitted viewer
-      this.sendSignal(conn, {
-        type: 'waiting-admit',
-        payload: { peerId },
-        senderId: this.myNode.peerId,
-        senderName: this.myNode.displayName,
-        roomId: this.roomInfo.roomId,
-        timestamp: Date.now(),
-      });
+      // Send admit signal DIRECTLY to the admitted viewer (critical — use reliable channel)
+      this.sendReliableCritical('waiting-admit', { peerId });
     }
 
     if (this.onWaitingRoomUpdate) {
@@ -3039,16 +3245,9 @@ export class FractalMeshEngine {
     const waitingEntry = this.waitingList.find(w => w.peerId === peerId);
     this.waitingList = this.waitingList.filter(w => w.peerId !== peerId);
 
-    // Send deny signal directly to the denied viewer via their stored connection
+    // Send deny signal directly to the denied viewer (critical — use reliable channel)
     if (waitingEntry?.conn && waitingEntry.conn.open) {
-      this.sendSignal(waitingEntry.conn, {
-        type: 'waiting-deny',
-        payload: { peerId },
-        senderId: this.myNode.peerId,
-        senderName: this.myNode.displayName,
-        roomId: this.roomInfo.roomId,
-        timestamp: Date.now(),
-      });
+      this.sendReliableCritical('waiting-deny', { peerId });
       // Close the connection after denying
       try { waitingEntry.conn.close(); } catch {}
     }
@@ -3063,27 +3262,13 @@ export class FractalMeshEngine {
   lockRoom(): void {
     if (!this.myNode || !this.roomInfo) return;
     (this.roomInfo as any).isLocked = true;
-    this.broadcastToChildren({
-      type: 'room-lock',
-      payload: {},
-      senderId: this.myNode.peerId,
-      senderName: this.myNode.displayName,
-      roomId: this.roomInfo.roomId,
-      timestamp: Date.now(),
-    });
+    this.sendReliableCritical('room-lock', {});
   }
 
   unlockRoom(): void {
     if (!this.myNode || !this.roomInfo) return;
     (this.roomInfo as any).isLocked = false;
-    this.broadcastToChildren({
-      type: 'room-unlock',
-      payload: {},
-      senderId: this.myNode.peerId,
-      senderName: this.myNode.displayName,
-      roomId: this.roomInfo.roomId,
-      timestamp: Date.now(),
-    });
+    this.sendReliableCritical('room-unlock', {});
   }
 
   // ============ PUBLIC API: MODERATION ============
@@ -3254,6 +3439,20 @@ export class FractalMeshEngine {
         this.sendSignal(conn, msg);
       }
     });
+  }
+
+  /** Send a raw ReliableMessage to all children (for ReliableChannel onSend callback) */
+  private broadcastToChildrenRaw(reliableMsg: ReliableMessage) {
+    if (!this.myNode) return;
+    const wrappedMsg: SignalMessage = {
+      type: 'reliable-message',
+      payload: reliableMsg,
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo?.roomId || '',
+      timestamp: Date.now(),
+    };
+    this.broadcastToChildren(wrappedMsg);
   }
 
   // ============ PUBLIC API ============
@@ -3665,15 +3864,8 @@ export class FractalMeshEngine {
     this.roomInfo.failoverHostPeerId = newHost.peerId;
     this.failoverHostPeerId = newHost.peerId;
 
-    // Notify all nodes about the failover
-    this.broadcastToChildren({
-      type: 'root-failover',
-      payload: { newHostPeerId: newHost.peerId },
-      senderId: this.myNode.peerId,
-      senderName: this.myNode.displayName,
-      roomId: this.roomInfo.roomId,
-      timestamp: Date.now(),
-    });
+    // Notify all nodes about the failover (critical — use reliable channel)
+    this.sendReliableCritical('root-failover', { newHostPeerId: newHost.peerId });
   }
 
   // Attempt to take over as host — called by root nodes when host is detected as gone
@@ -3700,13 +3892,8 @@ export class FractalMeshEngine {
       this.hostActive = false;
       this.nodes.set(this.myNode.peerId, this.myNode);
 
-      // Broadcast failover to all children
-      this.broadcastToChildren({
-        type: 'root-failover',
-        payload: { newHostPeerId: this.myNode.peerId, newHostName: this.myNode.displayName },
-        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
-        roomId: this.roomInfo?.roomId || '', timestamp: Date.now(),
-      });
+      // Broadcast failover to all children (critical — use reliable channel)
+      this.sendReliableCritical('root-failover', { newHostPeerId: this.myNode.peerId, newHostName: this.myNode.displayName });
 
       if (this.roomInfo) {
         this.roomInfo.hostActive = false;
@@ -3792,15 +3979,10 @@ export class FractalMeshEngine {
         });
       }
 
-      // Send promotion signal
+      // Send promotion signal (critical — use reliable channel)
       const conn = this.childConnections.get(rootId);
       if (conn && this.myNode && this.roomInfo) {
-        this.sendSignal(conn, {
-          type: 'root-promote',
-          payload: { isRoot: true, rootPriority: node.rootPriority, streamBufferMs: ROOT_BUFFER_SIZE_MS },
-          senderId: this.myNode.peerId, senderName: this.myNode.displayName,
-          roomId: this.roomInfo.roomId, timestamp: Date.now(),
-        });
+        this.sendReliableCritical('root-promote', { isRoot: true, rootPriority: node.rootPriority, streamBufferMs: ROOT_BUFFER_SIZE_MS });
 
         // Send stream buffer sync signal to begin buffering
         this.sendSignal(conn, {
@@ -3923,19 +4105,75 @@ export class FractalMeshEngine {
     this.rootNodes.add(node.peerId);
     this.subRootNodes.delete(node.peerId);
 
-    // Notify the node it's been promoted to root (silently)
-    const conn = this.childConnections.get(node.peerId);
-    if (conn && this.myNode && this.roomInfo) {
-      this.sendSignal(conn, {
-        type: 'root-promote',
-        payload: {
+    // NEW: Reassign as direct child of host if not already, so the host can
+    // send the stream directly to the root. Without this, roots stay in their
+    // tree position and never receive the host's stream — defeating the purpose.
+    if (this.myNode && node.parentId !== this.myNode.peerId) {
+      // Remove from old parent
+      if (node.parentId) {
+        const oldParent = this.nodes.get(node.parentId);
+        if (oldParent) {
+          oldParent.childrenIds = oldParent.childrenIds.filter(id => id !== node.peerId);
+          oldParent.currentRelayLoad = oldParent.childrenIds.length;
+          this.nodes.set(oldParent.peerId, oldParent);
+        }
+      }
+
+      // Add as direct child of host
+      node.parentId = this.myNode.peerId;
+      node.depth = 1;
+      if (!this.myNode.childrenIds.includes(node.peerId)) {
+        this.myNode.childrenIds.push(node.peerId);
+        this.myNode.currentRelayLoad = this.myNode.childrenIds.length;
+      }
+
+      // Close old data connection and create new one from host
+      const oldConn = this.childConnections.get(node.peerId);
+      if (oldConn) { try { oldConn.close(); } catch {} }
+      this.childConnections.delete(node.peerId);
+
+      // Create new connection to root
+      if (this.peer) {
+        const newConn = this.peer.connect(node.peerId, { reliable: true, serialization: 'json' });
+        newConn.on('open', () => {
+          newConn.on('data', (d: any) => this.handleSignal(newConn, d as SignalMessage));
+          newConn.on('close', () => this.handleChildDisconnect(node.peerId));
+          newConn.on('error', () => {});
+          this.childConnections.set(node.peerId, newConn);
+
+          // Send stream directly to root
+          if (this.localStream) {
+            this.callNodeWithStream(node.peerId, this.localStream);
+          }
+
+          // Tell root it's now a relay node (critical — use reliable channel)
+          if (this.myNode && this.roomInfo) {
+            this.sendReliableCritical('root-promote', {
+              isRoot: true,
+              rootPriority: node.rootPriority,
+              streamBufferMs: ROOT_BUFFER_SIZE_MS,
+            });
+          }
+        });
+        newConn.on('error', () => {
+          // Fallback: if new connection fails, still store the node as root
+          // but it won't relay until connection is established
+          console.warn('[FractalMesh] Failed to create new connection to root:', node.peerId);
+        });
+      }
+    } else {
+      // Already a direct child — just send the stream and promotion signal
+      if (this.localStream) {
+        this.callNodeWithStream(node.peerId, this.localStream);
+      }
+      const conn = this.childConnections.get(node.peerId);
+      if (conn && this.myNode && this.roomInfo) {
+        this.sendReliableCritical('root-promote', {
           rootPriority: node.rootPriority,
           bufferSizeMs: ROOT_BUFFER_SIZE_MS,
           isRoot: true,
-        },
-        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
-        roomId: this.roomInfo.roomId, timestamp: Date.now(),
-      });
+        });
+      }
     }
   }
 
@@ -3959,15 +4197,10 @@ export class FractalMeshEngine {
     this.rootNodes.delete(peerId);
     this.subRootNodes.delete(peerId);
 
-    // Notify demotion
+    // Notify demotion (critical — use reliable channel)
     const conn = this.childConnections.get(peerId);
     if (conn && this.myNode && this.roomInfo) {
-      this.sendSignal(conn, {
-        type: 'root-demote',
-        payload: { isRoot: false, isSubRoot: false },
-        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
-        roomId: this.roomInfo.roomId, timestamp: Date.now(),
-      });
+      this.sendReliableCritical('root-demote', { isRoot: false, isSubRoot: false });
     }
   }
 
@@ -4006,19 +4239,12 @@ export class FractalMeshEngine {
         this.roomInfo.hostActive = false;
       }
 
-      // Notify all nodes about failover
-      for (const [childId, conn] of this.childConnections) {
-        this.sendSignal(conn, {
-          type: 'root-failover',
-          payload: {
-            newHostPeerId: bestRoot.peerId,
-            newHostDisplayName: bestRoot.displayName,
-            rootCount: this.rootNodes.size,
-          },
-          senderId: this.myNode?.peerId || '', senderName: this.myNode?.displayName || '',
-          roomId: this.roomInfo?.roomId || '', timestamp: Date.now(),
-        });
-      }
+      // Notify all nodes about failover (critical — use reliable channel)
+      this.sendReliableCritical('root-failover', {
+        newHostPeerId: bestRoot.peerId,
+        newHostDisplayName: bestRoot.displayName,
+        rootCount: this.rootNodes.size,
+      });
 
       // Promote a sub-root to fill the gap
       for (const subRootId of this.subRootNodes) {
@@ -4038,8 +4264,26 @@ export class FractalMeshEngine {
     this.myNode.rootPriority = msg.payload.rootPriority || 1;
     this.myNode.clusterRole = 'relay';
     this.myNode.canRelay = true;
+    this.myNode.maxRelayCapacity = Math.max(this.myNode.maxRelayCapacity, 10); // Roots get extra capacity
+    this.myNode.streamBufferMs = msg.payload.bufferSizeMs || msg.payload.streamBufferMs || ROOT_BUFFER_SIZE_MS;
     this.nodes.set(this.myNode.peerId, this.myNode);
     // IMPORTANT: We keep myNode.role as 'viewer' — root is invisible
+
+    // NEW: If we have an incoming stream (from the host), start relaying to our children
+    if (this.incomingStream) {
+      this.relayStreamToChildren(this.incomingStream, '');
+    }
+    // Also relay local stream if available (e.g., if we're already a co-host)
+    if (this.localStream) {
+      this.relayStreamToChildren(this.localStream, '');
+    }
+
+    // NEW: Ensure we accept incoming connections from children and calls
+    // (these should already be set up from initViewer, but re-confirm for roots)
+    if (this.peer) {
+      this.peer.on('connection', (c: DataConnection) => this.handleIncomingChildConn(c));
+      this.peer.on('call', (c: MediaConnection) => this.handleIncomingCall(c));
+    }
   }
 
   private handleRootDemote(msg: SignalMessage) {
@@ -4100,6 +4344,71 @@ export class FractalMeshEngine {
       node.streamBufferMs = msg.payload.bufferMs || 0;
       this.nodes.set(msg.senderId, node);
     }
+  }
+
+  // ============ RELIABLE CHANNEL INTEGRATION ============
+
+  /** Handle incoming reliable message — unwrap and feed to ReliableChannel */
+  private handleReliableMessage(msg: SignalMessage) {
+    if (!this.reliableChannel) {
+      // If we don't have a reliable channel yet, just process the inner message directly
+      const innerMsg = msg.payload as ReliableMessage;
+      if (innerMsg && innerMsg.type === 'ack') {
+        // ACK message — handle it if we have a channel
+        return;
+      }
+      // Otherwise, process as a regular signal
+      const signalMsg: SignalMessage = {
+        type: innerMsg?.type || 'unknown',
+        payload: innerMsg?.payload,
+        senderId: innerMsg?.senderId || msg.senderId,
+        senderName: msg.senderName,
+        roomId: msg.roomId,
+        timestamp: innerMsg?.timestamp || msg.timestamp,
+      };
+      const dummyConn = null as any;
+      this.handleSignal(dummyConn, signalMsg);
+      return;
+    }
+
+    const reliableMsg = msg.payload as ReliableMessage;
+
+    if (reliableMsg.type === 'ack') {
+      // Handle ACK
+      const ack: AckMessage = reliableMsg.payload as AckMessage;
+      this.reliableChannel.handleAck(ack);
+    } else {
+      // Feed to reliable channel for ordered delivery and ACK sending
+      this.reliableChannel.receive(reliableMsg);
+    }
+  }
+
+  /** Send a critical signal through the ReliableChannel for guaranteed delivery */
+  private sendReliableCritical(type: string, payload: any) {
+    if (!this.reliableChannel || !this.myNode) {
+      // Fallback: broadcast normally if reliable channel not available
+      this.broadcastToChildren({
+        type,
+        payload,
+        senderId: this.myNode?.peerId || '',
+        senderName: this.myNode?.displayName || '',
+        roomId: this.roomInfo?.roomId || '',
+        timestamp: Date.now(),
+      });
+      return;
+    }
+    this.reliableChannel.send(type, payload, this.myNode.peerId, 'critical');
+  }
+
+  /** Get adaptive delivery stats for the UI */
+  getAdaptiveDeliveryStats() {
+    if (!this.adaptiveDelivery) return null;
+    return {
+      delivery: this.adaptiveDelivery.getDeliveryStats(),
+      bandwidthSavings: this.adaptiveDelivery.getBandwidthSavings(),
+      viewerCount: this.adaptiveDelivery.getViewerCount(),
+      profiles: this.adaptiveDelivery.getAllProfiles(),
+    };
   }
 
   // Check if a disconnected node is the host and trigger failover
@@ -4386,6 +4695,11 @@ export class FractalMeshEngine {
     if (this.hostBandwidthProbeTimer) { clearInterval(this.hostBandwidthProbeTimer); this.hostBandwidthProbeTimer = null; }
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.scheduler.destroy();
+
+    // Destroy reliable channel
+    this.reliableChannel?.destroy();
+    this.reliableChannel = null;
+    this.adaptiveDelivery = null;
 
     // Final attendance persistence before cleanup
     this.persistAttendance();

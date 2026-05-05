@@ -50,11 +50,11 @@ export interface TreeTopology {
 
 export class TreeHoneycombEngine {
   private topology: TreeTopology;
-  private maxRoots = 7;
-  private maxBranchesPerRoot = 5;
-  private maxViewersPerCell = 6;
-  private minViewersPerCell = 3;
-  private hostUploadLimit = 7;  // Host NEVER exceeds 7 direct connections
+  private maxRoots = 15;
+  private maxBranchesPerRoot = 8;
+  private maxViewersPerCell = 10;
+  private minViewersPerCell = 4;
+  private hostUploadLimit = 15;  // Host can connect to more roots for 1000+ users
   
   constructor(hostPeerId: string) {
     this.topology = {
@@ -173,28 +173,47 @@ export class TreeHoneycombEngine {
     return { cellId: '', needsNewCell: true };
   }
   
-  // Link a cell to its hexagonal neighbors
+  // Link a cell to its hexagonal neighbors using deterministic hash-based adjacency
   private linkCellToNeighbors(cellId: string): void {
-    const allCells = Array.from(this.topology.cells.keys());
-    if (allCells.length <= 1) return;
-    
-    // Simple adjacency: link to up to 6 nearest cells by creation time / position
-    const others = allCells.filter(id => id !== cellId);
-    const neighbors = others.slice(-6); // Last 6 cells are "nearby"
-    
+    const allCellIds = Array.from(this.topology.cells.keys());
+    if (allCellIds.length <= 1) return;
+
     const cell = this.topology.cells.get(cellId);
-    if (cell) {
-      cell.neighborCellIds = neighbors.slice(-6);
-      this.topology.honeycombGrid.set(cellId, neighbors.slice(-6));
+    if (!cell) return;
+
+    // Use deterministic hash-based adjacency for O(1) neighbor assignment
+    // Each cell gets up to 6 neighbors based on its position in the grid
+    const cellIndex = allCellIds.indexOf(cellId);
+    const totalCells = allCellIds.length;
+
+    // Hexagonal grid: each cell connects to neighbors in a pattern
+    const neighbors: string[] = [];
+    const offsets = [-1, 1, -2, 2, -3, 3]; // Spread neighbors evenly
+
+    for (const offset of offsets) {
+      const neighborIdx = (cellIndex + offset + totalCells) % totalCells;
+      if (neighborIdx !== cellIndex) {
+        const neighborId = allCellIds[neighborIdx];
+        if (neighborId && neighborId !== cellId) {
+          neighbors.push(neighborId);
+        }
+      }
+      if (neighbors.length >= 6) break;
     }
-    
-    // Make the adjacency bidirectional
-    for (const nId of neighbors.slice(-6)) {
+
+    cell.neighborCellIds = neighbors;
+    this.topology.honeycombGrid.set(cellId, neighbors);
+
+    // Make adjacency bidirectional
+    for (const nId of neighbors) {
       const nCell = this.topology.cells.get(nId);
       if (nCell && !nCell.neighborCellIds.includes(cellId)) {
         nCell.neighborCellIds.push(cellId);
-        if (nCell.neighborCellIds.length > 6) nCell.neighborCellIds.shift();
-        this.topology.honeycombGrid.set(nId, nCell.neighborCellIds);
+        if (nCell.neighborCellIds.length > 6) {
+          // Remove oldest neighbor to make room
+          nCell.neighborCellIds.shift();
+        }
+        this.topology.honeycombGrid.set(nId, [...nCell.neighborCellIds]);
       }
     }
   }
@@ -316,17 +335,119 @@ export class TreeHoneycombEngine {
     return 'audio-only';                                       // Audio only
   }
   
+  // ===== CAPACITY PLANNING =====
+
+  getCapacityForViewers(viewerCount: number): { neededRoots: number; neededBranches: number; neededCells: number; hostUploadKbps: number } {
+    const viewersPerCell = this.maxViewersPerCell;
+    const neededCells = Math.ceil(viewerCount / viewersPerCell);
+    const neededBranches = Math.ceil(neededCells / this.maxBranchesPerRoot);
+    const neededRoots = Math.max(1, Math.ceil(neededBranches / this.maxBranchesPerRoot));
+    const hostUploadKbps = neededRoots * 2500; // 2.5 Mbps per root at 720p
+
+    return { neededRoots, neededBranches, neededCells, hostUploadKbps };
+  }
+
+  // ===== REBALANCING =====
+
+  rebalance(): { cellsMerged: number; cellsSplit: number } {
+    let cellsMerged = 0;
+    let cellsSplit = 0;
+
+    // Check for underpopulated cells that should merge
+    const underpopulated: string[] = [];
+    this.topology.cells.forEach((cell, cellId) => {
+      if (cell.memberPeerIds.length < this.minViewersPerCell) {
+        underpopulated.push(cellId);
+      }
+    });
+
+    // Check for overpopulated cells that should split
+    const overpopulated: string[] = [];
+    this.topology.cells.forEach((cell, cellId) => {
+      if (cell.memberPeerIds.length > this.maxViewersPerCell) {
+        overpopulated.push(cellId);
+      }
+    });
+
+    // Merge underpopulated cells with their neighbors
+    for (const cellId of underpopulated) {
+      const cell = this.topology.cells.get(cellId);
+      if (!cell) continue;
+
+      // Find neighbor with fewest members
+      let bestNeighborId: string | null = null;
+      let bestNeighborSize = Infinity;
+      for (const nId of cell.neighborCellIds) {
+        const nCell = this.topology.cells.get(nId);
+        if (nCell && nCell.memberPeerIds.length + cell.memberPeerIds.length <= this.maxViewersPerCell) {
+          if (nCell.memberPeerIds.length < bestNeighborSize) {
+            bestNeighborSize = nCell.memberPeerIds.length;
+            bestNeighborId = nId;
+          }
+        }
+      }
+
+      if (bestNeighborId) {
+        const nCell = this.topology.cells.get(bestNeighborId)!;
+        // Move members to neighbor
+        for (const memberId of cell.memberPeerIds) {
+          nCell.memberPeerIds.push(memberId);
+          const leaf = this.topology.leaves.get(memberId);
+          if (leaf) leaf.cellId = bestNeighborId;
+        }
+
+        // Remove empty cell
+        this.topology.cells.delete(cellId);
+        this.topology.honeycombGrid.delete(cellId);
+
+        // Update neighbor references
+        for (const nId2 of cell.neighborCellIds) {
+          const n2 = this.topology.cells.get(nId2);
+          if (n2) {
+            n2.neighborCellIds = n2.neighborCellIds.filter(id => id !== cellId);
+            this.topology.honeycombGrid.set(nId2, n2.neighborCellIds);
+          }
+        }
+
+        cellsMerged++;
+      }
+    }
+
+    // Split overpopulated cells
+    for (const cellId of overpopulated) {
+      const cell = this.topology.cells.get(cellId);
+      if (!cell) continue;
+
+      // Split into two cells
+      const half = Math.floor(cell.memberPeerIds.length / 2);
+      const membersToMove = cell.memberPeerIds.splice(half);
+      cell.memberPeerIds = cell.memberPeerIds.slice(0, half);
+
+      this.createCell(cell.workerPeerId, membersToMove);
+      cellsSplit++;
+    }
+
+    return { cellsMerged, cellsSplit };
+  }
+
   // ===== TOPOLOGY STATS =====
-  
+
   getStats() {
+    const totalViewers = this.topology.leaves.size;
+    const capacity = this.getCapacityForViewers(totalViewers);
+
     return {
       roots: this.topology.roots.size,
       branches: this.topology.branches.size,
       cells: this.topology.cells.size,
-      leaves: this.topology.leaves.size,
-      totalViewers: this.topology.leaves.size,
+      leaves: totalViewers,
+      totalViewers,
       hostUploadKbps: this.getHostUploadLoad(),
       maxCapacity: this.topology.roots.size * this.maxBranchesPerRoot * this.maxViewersPerCell,
+      capacityFor1000: capacity,
+      utilizationPercent: this.topology.roots.size > 0
+        ? Math.round((totalViewers / (this.topology.roots.size * this.maxBranchesPerRoot * this.maxViewersPerCell)) * 100)
+        : 0,
     };
   }
   

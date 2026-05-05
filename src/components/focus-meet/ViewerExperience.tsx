@@ -267,9 +267,10 @@ export function ViewerExperience() {
       return;
     }
     const animate = () => {
+      const now = Date.now();
       setWaveHeights(prev =>
-        prev.map(h => {
-          const target = Math.random() * 0.7 + 0.15;
+        prev.map((h, i) => {
+          const target = Math.abs(Math.sin(now / 300 + i * 0.5)) * 0.7 + 0.3;
           return h + (target - h) * 0.3;
         })
       );
@@ -309,10 +310,9 @@ export function ViewerExperience() {
   }, []);
 
   const handleRequestHD = useCallback(() => {
-    // Request higher quality from the host/presenter via the engine
-    if (engine) {
-      // Send a quality request signal through the mesh
-      engine.sendChatMessage('[system] Viewer requests HD quality');
+    const eng = useRoomStore.getState().engine;
+    if (eng) {
+      eng.sendQualityRequest('high');
       toast.info('HD quality requested', {
         description: 'The presenter will be notified',
         duration: 3000,
@@ -323,7 +323,7 @@ export function ViewerExperience() {
         duration: 3000,
       });
     }
-  }, [engine]);
+  }, []);
 
   const handleToggleFullscreen = useCallback(() => {
     const el = document.fullscreenElement;

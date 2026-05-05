@@ -101,34 +101,8 @@ export function PresenterView() {
     };
   }, [isHost, setIsPresenting]);
 
-  // Mobile-friendly camera initialization
-  useEffect(() => {
-    if (!engine || !isHost) return;
-
-    const startMobileCamera = async () => {
-      try {
-        const constraints: MediaStreamConstraints = {
-          video: {
-            facingMode: isMobile ? 'user' : undefined,
-            width: { ideal: isMobile ? 640 : 1280 },
-            height: { ideal: isMobile ? 480 : 720 },
-          },
-          audio: true,
-        };
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        // The engine handles the stream via its own startLocalStream
-        // but we can also set it in the store if needed
-        stream.getTracks().forEach(track => track.stop());
-      } catch {
-        // Camera may not be available on this device
-      }
-    };
-
-    // Only attempt on mount if we need mobile-specific constraints
-    if (isMobile) {
-      startMobileCamera();
-    }
-  }, [engine, isHost, isMobile]);
+  // Mobile camera is handled by RoomPage's startLocalStream — no separate init needed here.
+  // Previously this effect started the camera then immediately stopped all tracks, which was a bug.
 
   // iOS fullscreen fallback using CSS fixed positioning
   const toggleFullscreen = useCallback(() => {
@@ -718,7 +692,8 @@ export function PresenterView() {
       </div>
 
       {/* ═══ BOTTOM TOOLBAR ═══ */}
-      <div className="flex items-center justify-between px-2 sm:px-4 py-2 bg-zinc-900 border-t border-zinc-800 flex-shrink-0 gap-2 overflow-x-auto">
+      {/* Desktop controls — hidden on mobile */}
+      <div className="hidden md:flex items-center justify-between px-2 sm:px-4 py-2 bg-zinc-900 border-t border-zinc-800 flex-shrink-0 gap-2 overflow-x-auto">
         {/* Slide navigation */}
         <div className="flex items-center gap-1 sm:gap-2 min-w-0 flex-shrink-0">
           <Button
@@ -743,15 +718,13 @@ export function PresenterView() {
             <ChevronRight className="w-4 h-4" />
           </Button>
 
-          {/* Upload slides button — using label wrapping for mobile compatibility */}
+          {/* Upload slides button */}
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <label
-                  className={`flex items-center gap-1 h-9 px-2 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 cursor-pointer transition-colors touch-manipulation ${isMobile ? 'min-w-[44px] min-h-[44px] justify-center' : ''}`}
-                >
+                <label className="flex items-center gap-1 h-9 px-2 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 cursor-pointer transition-colors touch-manipulation">
                   <Upload className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline text-xs">Upload</span>
+                  <span className="text-xs">Upload</span>
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -775,7 +748,7 @@ export function PresenterView() {
             icon={<MousePointer2 className="w-4 h-4" />}
             label="Laser"
             activeColor="text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
-            minSize={isMobile}
+            minSize={false}
           />
           <ToolButton
             active={activeTool === 'pen'}
@@ -783,7 +756,7 @@ export function PresenterView() {
             icon={<Pen className="w-4 h-4" />}
             label="Pen"
             activeColor="text-red-400 bg-red-500/10 border-red-500/30"
-            minSize={isMobile}
+            minSize={false}
           />
           <ToolButton
             active={activeTool === 'highlighter'}
@@ -791,7 +764,7 @@ export function PresenterView() {
             icon={<Highlighter className="w-4 h-4" />}
             label="Highlight"
             activeColor="text-yellow-400 bg-yellow-500/10 border-yellow-500/30"
-            minSize={isMobile}
+            minSize={false}
           />
           <ToolButton
             active={activeTool === 'eraser'}
@@ -799,7 +772,7 @@ export function PresenterView() {
             icon={<Eraser className="w-4 h-4" />}
             label="Erase"
             activeColor="text-zinc-300 bg-zinc-600/30 border-zinc-500/30"
-            minSize={isMobile}
+            minSize={false}
           />
           <ToolButton
             active={activeTool === 'text'}
@@ -807,7 +780,7 @@ export function PresenterView() {
             icon={<Type className="w-4 h-4" />}
             label="Text"
             activeColor="text-blue-400 bg-blue-500/10 border-blue-500/30"
-            minSize={isMobile}
+            minSize={false}
           />
           <div className="w-px h-5 bg-zinc-700 mx-0.5" />
           <ToolButton
@@ -816,7 +789,7 @@ export function PresenterView() {
             icon={<Trash2 className="w-4 h-4" />}
             label="Clear"
             activeColor=""
-            minSize={isMobile}
+            minSize={false}
           />
         </div>
 
@@ -828,7 +801,7 @@ export function PresenterView() {
             icon={audioEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
             label="Mic"
             activeColor={audioEnabled ? 'text-emerald-400' : 'text-red-400'}
-            minSize={isMobile}
+            minSize={false}
           />
           <ToolButton
             active={videoEnabled}
@@ -836,7 +809,7 @@ export function PresenterView() {
             icon={videoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
             label="Cam"
             activeColor={videoEnabled ? 'text-emerald-400' : 'text-red-400'}
-            minSize={isMobile}
+            minSize={false}
           />
           <ToolButton
             active={false}
@@ -844,9 +817,48 @@ export function PresenterView() {
             icon={<Users className="w-4 h-4" />}
             label="Q&A"
             activeColor=""
-            minSize={isMobile}
+            minSize={false}
           />
         </div>
+      </div>
+
+      {/* Mobile controls — compact icon-only buttons, visible on mobile only */}
+      <div className="flex md:hidden items-center gap-1 p-1.5 bg-zinc-900 border-t border-zinc-800 overflow-x-auto flex-shrink-0">
+        <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 text-zinc-400" onClick={() => handleSlideChange(currentSlide - 1)} disabled={currentSlide === 0}>
+          <ChevronLeft className="w-4 h-4" />
+        </Button>
+        <span className="text-[10px] text-zinc-400 font-mono shrink-0">{currentSlide + 1}/{totalSlides}</span>
+        <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 text-zinc-400" onClick={() => handleSlideChange(currentSlide + 1)} disabled={currentSlide === totalSlides - 1}>
+          <ChevronRight className="w-4 h-4" />
+        </Button>
+        <div className="w-px h-6 bg-zinc-700 mx-0.5 shrink-0" />
+        <label className="h-10 w-10 shrink-0 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 cursor-pointer">
+          <Upload className="w-4 h-4" />
+          <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleSlideUpload} />
+        </label>
+        <div className="w-px h-6 bg-zinc-700 mx-0.5 shrink-0" />
+        <Button variant="ghost" size="icon" className={`h-10 w-10 shrink-0 ${activeTool === 'none' ? 'text-emerald-400 bg-emerald-500/10' : 'text-zinc-400'}`} onClick={() => setActiveTool('none')}>
+          <MousePointer2 className="w-4 h-4" />
+        </Button>
+        <Button variant="ghost" size="icon" className={`h-10 w-10 shrink-0 ${activeTool === 'pen' ? 'text-red-400 bg-red-500/10' : 'text-zinc-400'}`} onClick={() => setActiveTool('pen')}>
+          <Pen className="w-4 h-4" />
+        </Button>
+        <Button variant="ghost" size="icon" className={`h-10 w-10 shrink-0 ${activeTool === 'highlighter' ? 'text-yellow-400 bg-yellow-500/10' : 'text-zinc-400'}`} onClick={() => setActiveTool('highlighter')}>
+          <Highlighter className="w-4 h-4" />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 text-zinc-400" onClick={handleClearAnnotations}>
+          <Trash2 className="w-4 h-4" />
+        </Button>
+        <div className="w-px h-6 bg-zinc-700 mx-0.5 shrink-0" />
+        <Button variant="ghost" size="icon" className={`h-10 w-10 shrink-0 ${audioEnabled ? 'text-emerald-400' : 'text-red-400'}`} onClick={() => { if (engine) { const enabled = engine.toggleAudio(); setAudioEnabled(enabled); } }}>
+          {audioEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+        </Button>
+        <Button variant="ghost" size="icon" className={`h-10 w-10 shrink-0 ${videoEnabled ? 'text-emerald-400' : 'text-red-400'}`} onClick={() => { if (engine) { const enabled = engine.toggleVideo(); setVideoEnabled(enabled); } }}>
+          {videoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+        </Button>
+        <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 text-zinc-400" onClick={toggleRecording}>
+          {isRecording ? <Circle className="w-4 h-4 fill-red-500 text-red-500 animate-pulse" /> : <Radio className="w-4 h-4" />}
+        </Button>
       </div>
 
       {/* Pen size slider (shown when pen/highlighter active) */}

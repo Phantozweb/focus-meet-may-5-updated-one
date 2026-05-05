@@ -128,6 +128,19 @@ class WebGPUVideoProcessor implements VideoFrameProcessor {
   private initialized = false;
   private initPromise: Promise<boolean>;
 
+  // Persistent resources to avoid GPU memory churn
+  private uniformBuffer: GPUBuffer | null = null;
+  private uniformBufferSize = 0;
+  private lastVideoFrame: any = null;
+  private externalTexture: GPUExternalTexture | null = null;
+  private lastTextureWidth = 0;
+  private lastTextureHeight = 0;
+
+  // Frame skip logic for mobile
+  private isMobile = false;
+  private frameSkipCounter = 0;
+  private readonly FRAME_SKIP_ON_MOBILE = 2; // Process every 3rd frame on mobile
+
   constructor() {
     this.initPromise = this.init();
   }
@@ -279,6 +292,11 @@ class WebGPUVideoProcessor implements VideoFrameProcessor {
         addressModeV: 'clamp-to-edge',
       });
 
+      // Detect mobile device for frame skip logic
+      try {
+        this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      } catch {}
+
       this.initialized = true;
       return true;
     } catch {
@@ -293,6 +311,14 @@ class WebGPUVideoProcessor implements VideoFrameProcessor {
 
   processFrame(source: HTMLVideoElement | HTMLCanvasElement, target: HTMLCanvasElement): void {
     if (!this.initialized || !this.device || !this.pipeline || !this.sampler) return;
+
+    // Skip frames on mobile to reduce GPU load
+    if (this.isMobile && this.frameSkipCounter < this.FRAME_SKIP_ON_MOBILE) {
+      this.frameSkipCounter++;
+      // Just draw the last processed frame — skip GPU processing
+      return;
+    }
+    this.frameSkipCounter = 0;
 
     try {
       const width = target.width || ('videoWidth' in source ? (source as HTMLVideoElement).videoWidth : source.width) || 1280;
@@ -310,21 +336,27 @@ class WebGPUVideoProcessor implements VideoFrameProcessor {
         alphaMode: 'opaque',
       });
 
-      // Upload video frame to GPU texture
-      if (this.texture) this.texture.destroy();
-      this.texture = this.device.createTexture({
-        size: [width, height],
-        format: 'rgba8unorm',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-      });
+      // Reuse texture when dimensions haven't changed (avoids GPU memory churn)
+      const needsNewTexture = !this.texture || this.lastTextureWidth !== width || this.lastTextureHeight !== height;
+      if (needsNewTexture) {
+        if (this.texture) this.texture.destroy();
+        this.texture = this.device.createTexture({
+          size: [width, height],
+          format: 'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        this.lastTextureWidth = width;
+        this.lastTextureHeight = height;
+      }
 
+      // Upload video frame to GPU texture
       this.device.queue.copyExternalImageToTexture(
         { source: source as any, flipY: true },
         { texture: this.texture },
         [width, height],
       );
 
-      // Create uniform buffer for processing params
+      // Persistent uniform buffer — only recreate if size changed
       const uniformData = new Float32Array([
         0.0,    // brightness
         1.05,   // contrast
@@ -335,11 +367,16 @@ class WebGPUVideoProcessor implements VideoFrameProcessor {
         0.0,    // padding
         0.0,    // padding
       ]);
-      const uniformBuffer = this.device.createBuffer({
-        size: uniformData.byteLength,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      this.device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+      const requiredSize = uniformData.byteLength;
+      if (!this.uniformBuffer || this.uniformBufferSize !== requiredSize) {
+        if (this.uniformBuffer) this.uniformBuffer.destroy();
+        this.uniformBuffer = this.device.createBuffer({
+          size: requiredSize,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        this.uniformBufferSize = requiredSize;
+      }
+      this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
 
       // Create bind group
       const bindGroup = this.device.createBindGroup({
@@ -347,7 +384,7 @@ class WebGPUVideoProcessor implements VideoFrameProcessor {
         entries: [
           { binding: 0, resource: this.sampler },
           { binding: 1, resource: this.texture.createView() },
-          { binding: 2, resource: { buffer: uniformBuffer } },
+          { binding: 2, resource: { buffer: this.uniformBuffer! } },
         ],
       });
 
@@ -370,15 +407,13 @@ class WebGPUVideoProcessor implements VideoFrameProcessor {
       renderPass.end();
 
       this.device.queue.submit([commandEncoder.finish()]);
-
-      // Clean up per-frame resources
-      uniformBuffer.destroy();
     } catch {
       // WebGPU processing failed — the factory will fall back
     }
   }
 
   destroy() {
+    if (this.uniformBuffer) this.uniformBuffer.destroy();
     if (this.texture) this.texture.destroy();
     if (this.device) this.device.destroy();
     this.device = null;
@@ -387,6 +422,11 @@ class WebGPUVideoProcessor implements VideoFrameProcessor {
     this.sampler = null;
     this.texture = null;
     this.bindGroup = null;
+    this.uniformBuffer = null;
+    this.uniformBufferSize = 0;
+    this.lastVideoFrame = null;
+    this.lastTextureWidth = 0;
+    this.lastTextureHeight = 0;
     this.initialized = false;
   }
 }
