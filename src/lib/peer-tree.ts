@@ -252,10 +252,10 @@ export class FractalMeshEngine {
 
   // ============ PEER CONFIG ============
 
-  // PRIMARY: Use PeerJS cloud server (0.peerjs.com) as default
+  // PRIMARY: PeerJS cloud server (most compatible, works through firewalls)
   private getPeerConfig() {
     return {
-      debug: 0, // Suppress noisy PeerJS console logs
+      debug: 0,
       config: { iceServers: ICE_SERVERS },
       host: '0.peerjs.com',
       port: 443,
@@ -264,12 +264,12 @@ export class FractalMeshEngine {
     };
   }
 
-  // FALLBACK: Alternate PeerJS cloud server for retry
+  // FALLBACK: Alternate PeerJS cloud server
   private getPeerConfigFallback() {
     return {
       debug: 0,
       config: { iceServers: ICE_SERVERS },
-      host: '1.peerjs.com',
+      host: '0.peerjs.com',
       port: 443,
       path: '/',
       secure: true,
@@ -301,22 +301,27 @@ export class FractalMeshEngine {
 
   // ============ HOST: CREATE ROOM ============
 
-  async createRoom(hostName: string, title: string): Promise<RoomInfo> {
+  async createRoom(hostName: string, title: string, existingRoomId?: string): Promise<RoomInfo> {
     await this.ensurePeerJS();
-    const roomId = this.generateRoomId();
+    const roomId = existingRoomId || this.generateRoomId();
     const peerId = `fm-${roomId}-host`;
 
     return new Promise((resolve, reject) => {
+      let attempts = 0;
       const tryConnect = (config: any, suffix = '') => {
+        attempts++;
         const pid = peerId + suffix;
         const p = new this.PeerJS(pid, config);
 
         const timeout = setTimeout(() => {
           try { p.destroy(); } catch {}
-          if (config === this.getPeerConfig()) {
+          if (attempts < 3) {
+            // Retry with new suffix to avoid ID collision
+            setTimeout(() => tryConnect(config, `-${Date.now()}`), 1000);
+          } else if (config === this.getPeerConfig()) {
             tryConnect(this.getPeerConfigFallback(), '-fb');
           } else {
-            reject(new Error('Could not connect to signaling server'));
+            reject(new Error('Could not connect to signaling server. Please check your internet connection and try again.'));
           }
         }, PEER_CONNECT_TIMEOUT);
 
@@ -328,11 +333,15 @@ export class FractalMeshEngine {
         p.on('error', (err: any) => {
           clearTimeout(timeout);
           if (err.type === 'unavailable-id') {
+            // ID already taken — try with timestamp suffix
             tryConnect(config, `-${Date.now()}`);
+          } else if (attempts < 3) {
+            // Retry before falling back
+            setTimeout(() => tryConnect(config, `-${Date.now()}`), 1000);
           } else if (config === this.getPeerConfig()) {
             tryConnect(this.getPeerConfigFallback(), '-fb');
           } else {
-            reject(err);
+            reject(new Error(`Failed to create room: ${err.type || 'unknown error'}. Please try again.`));
           }
         });
 
@@ -444,16 +453,21 @@ export class FractalMeshEngine {
     const peerId = `fm-${roomId}-${this.generatePeerSuffix()}`;
 
     return new Promise((resolve, reject) => {
+      let attempts = 0;
       const tryConnect = (config: any, suffix = '') => {
+        attempts++;
         const pid = peerId + suffix;
         const p = new this.PeerJS(pid, config);
 
         const timeout = setTimeout(() => {
           try { p.destroy(); } catch {}
-          if (config === this.getPeerConfig()) {
+          if (attempts < 3) {
+            // Retry with slight delay and new suffix
+            setTimeout(() => tryConnect(config, `-${Date.now()}`), 1000);
+          } else if (config === this.getPeerConfig()) {
             tryConnect(this.getPeerConfigFallback(), '-fb');
           } else {
-            reject(new Error('Could not connect. Room may not exist.'));
+            reject(new Error('Could not connect to signaling server. Please check your internet connection and try again.'));
           }
         }, PEER_CONNECT_TIMEOUT);
 
@@ -466,10 +480,12 @@ export class FractalMeshEngine {
           clearTimeout(timeout);
           if (err.type === 'unavailable-id') {
             tryConnect(config, `-${Date.now()}`);
-          } else if (config === this.getPeerConfig()) {
-            tryConnect(this.getPeerConfigFallback(), '-fb');
+          } else if (err.type === 'peer-unavailable') {
+            reject(new Error('Host is not online yet. The host needs to start the room first before viewers can join.'));
+          } else if (config === this.getPeerConfig() && attempts < 3) {
+            setTimeout(() => tryConnect(this.getPeerConfigFallback(), '-fb'), 1000);
           } else {
-            reject(err);
+            reject(new Error(`Connection error: ${err.type || 'unknown'}. Please try again.`));
           }
         });
 

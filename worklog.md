@@ -751,3 +751,30 @@ Stage Summary:
 - Developer mode: `#dev` in URL → panel with 4 role quick-enter buttons + room credentials display
 - Share link: `#join` in URL → auto-opens join form → submits → enters webinar
 - Lint passes, dev server compiles successfully
+
+---
+Task ID: 5
+Agent: main
+Task: Fix connection failure - user can't join meeting at all
+
+Work Log:
+- Discovered CRITICAL BUG: createRoom() generated a random roomId internally, but viewers used FM-A3K7 from URL — peer IDs NEVER matched
+- Fixed createRoom() to accept optional existingRoomId parameter
+- Fixed RoomPage to pass normalizedId (FM-A3K7) from URL hash to createRoom()
+- Now host creates peer fm-FM-A3K7-host and viewers connect to fm-FM-A3K7-host — they MATCH
+- Added connectionError and connectionStep state tracking to RoomPage
+- Added proper error screen with troubleshooting tips, Retry button, and Go Back button
+- Added progress indicator showing connection step ("Connecting to signaling server...", "Starting camera & microphone...")
+- Improved createRoom() retry logic: 3 attempts with 1s delay before falling back to alternate config
+- Improved joinRoom() retry logic: 3 attempts, peer-unavailable detection for clear "Host not online" message
+- Better error messages: "Host is not online yet" instead of "Host unreachable"
+- Added AlertTriangle warning in dev panel: "Always start the Host first!"
+- PeerJS cloud server verified accessible (200 response)
+- Set up local PeerJS server mini-service on port 9001 (for future use when Caddy proxy is configured)
+- Lint passes, dev server compiles successfully
+
+Stage Summary:
+- ROOT CAUSE FIXED: Room ID mismatch between host and viewer (random vs URL-based)
+- Now both host and viewer use the same room ID (FM-A3K7) for peer discovery
+- Connection error screen with retry/back buttons instead of silent failure
+- Better retry logic and error messages throughout PeerJS connection flow

@@ -837,6 +837,10 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
             <p className="text-[11px] text-zinc-500 mb-4">
               Quick-enter the room with pre-filled data to test all features. Open this page with <code className="px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[10px]">#dev</code> in the URL to activate.
             </p>
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-4">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+              <span className="text-[10px] text-amber-300"><strong>Important:</strong> Always start the Host first! Viewers can only join after the host is online.</span>
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <button
                 onClick={devEnterAsHost}

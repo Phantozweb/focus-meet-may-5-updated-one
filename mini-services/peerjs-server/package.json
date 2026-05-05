@@ -1,0 +1,15 @@
+{
+  "name": "focus-meet-peerjs-server",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot index.ts"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "peer": "^1.0.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0"
+  }
+}

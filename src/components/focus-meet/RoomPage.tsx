@@ -81,6 +81,8 @@ export function RoomPage() {
   const [gpuCapabilities] = useState<GPUCapabilities>(() => getGPUCapabilities());
   const [gpuMetrics, setGpuMetrics] = useState<GPUPerfMetrics | null>(null);
   const videoProcessorRef = useRef<VideoFrameProcessor | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectionStep, setConnectionStep] = useState<string>('Initializing...');
   const [floatingReactions, setFloatingReactions] = useState<{ id: string; type: ReactionType; x: number }[]>([]);
   const [isWaitingRoomPanelOpen, setIsWaitingRoomPanelOpen] = useState(false);
 
@@ -304,8 +306,11 @@ export function RoomPage() {
       try {
         if (host) {
           // HOST FLOW: create room → start camera/mic → enter host view
-          const info = await eng.createRoom(name, `Focus Meet - ${normalizedId}`);
+          // Pass the roomId from URL so host and viewer peer IDs match
+          setConnectionStep('Connecting to signaling server...');
+          const info = await eng.createRoom(name, `Focus Meet - ${normalizedId}`, normalizedId);
           setRoomInfo(info); setIsHost(true);
+          setConnectionStep('Starting camera & microphone...');
           // Sync waiting room setting from URL param to engine
           eng.setWaitingRoomEnabled(waitingRoomParam);
           setWaitingRoomEnabled(waitingRoomParam);
@@ -315,6 +320,7 @@ export function RoomPage() {
             content: `Room "${normalizedId}" created! Share the Room ID and Token with participants.`, timestamp: Date.now(), type: 'system' });
         } else {
           // VIEWER FLOW: join room → waiting room (if needed) → viewer experience
+          setConnectionStep('Connecting to signaling server...');
           const info = await eng.joinRoom(normalizedId, name);
           setRoomInfo(info); setIsHost(false);
 
@@ -336,8 +342,9 @@ export function RoomPage() {
         }
         setInRoom(true);
       } catch (err: any) {
-        toast.error('Connection failed', { description: err.message || 'Try again' });
-        setTimeout(() => { window.location.hash = ''; }, 2000);
+        const errorMsg = err?.message || 'Unknown error';
+        setConnectionError(errorMsg);
+        toast.error('Connection failed', { description: errorMsg });
       }
     };
     init();
@@ -387,12 +394,62 @@ export function RoomPage() {
   // RENDER: Connecting... screen
   // ═══════════════════════════════════════════════════════
   if (!isInRoom) {
+    // Error state — show error with retry
+    if (connectionError) {
+      return (
+        <div className="h-screen w-screen bg-zinc-950 flex items-center justify-center p-4">
+          <div className="flex flex-col items-center gap-5 max-w-sm text-center">
+            <div className="w-16 h-16 rounded-2xl bg-red-600/15 border border-red-500/30 flex items-center justify-center">
+              <AlertTriangle className="w-8 h-8 text-red-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-white mb-1">Connection Failed</h2>
+              <p className="text-sm text-zinc-400">{connectionError}</p>
+            </div>
+            <div className="bg-zinc-900/80 border border-white/10 rounded-xl p-4 w-full text-left space-y-2">
+              <p className="text-xs font-semibold text-zinc-300">Troubleshooting:</p>
+              <ul className="text-[11px] text-zinc-500 space-y-1.5">
+                <li className="flex items-start gap-2">
+                  <span className="text-amber-400 mt-0.5">•</span>
+                  <span>Make sure the <strong className="text-zinc-300">host has started the room</strong> before viewers try to join</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-amber-400 mt-0.5">•</span>
+                  <span>Check your internet connection is stable</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-amber-400 mt-0.5">•</span>
+                  <span>Try joining again — temporary network issues can cause this</span>
+                </li>
+              </ul>
+            </div>
+            <div className="flex gap-3 w-full">
+              <Button
+                onClick={() => { setConnectionError(null); setConnectionStep('Retrying...'); initRef.current = false; window.location.reload(); }}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold h-11"
+              >
+                Retry
+              </Button>
+              <Button
+                onClick={() => { window.location.hash = ''; }}
+                variant="outline"
+                className="flex-1 border-white/15 text-zinc-300 hover:bg-white/5 h-11"
+              >
+                Go Back
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Connecting state — show progress
     return (
       <div className="h-screen w-screen bg-zinc-950 flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-zinc-400 text-sm">Connecting...</p>
-          <p className="text-zinc-600 text-xs">Setting up your connection</p>
+          <p className="text-zinc-300 text-sm font-medium">{connectionStep}</p>
+          <p className="text-zinc-600 text-xs">This may take a moment</p>
         </div>
       </div>
     );
