@@ -10,7 +10,7 @@ import {
   Trophy, AlertTriangle, Wifi, Volume2,
   Image, Lightbulb, Flame,
   Hexagon, Star, MessageSquare, ThumbsUp,
-  Lock, Mail, Eye,
+  Lock, Mail, Eye, Link2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,12 +32,12 @@ const ACCESS_CODES: Record<string, { role: 'Host' | 'Speaker' | 'Moderator'; col
 
 // ============ JOIN ROOM MODAL ============
 
-function JoinRoomModal({ open, onClose, onSwitchToLogin }: { open: boolean; onClose: () => void; onSwitchToLogin: () => void }) {
-  const [joinName, setJoinName] = useState('');
-  const [joinEmail, setJoinEmail] = useState('');
-  const [membershipId, setMembershipId] = useState('');
+function JoinRoomModal({ open, onClose, onSwitchToLogin, devMode }: { open: boolean; onClose: () => void; onSwitchToLogin: () => void; devMode?: boolean }) {
+  const [joinName, setJoinName] = useState(devMode ? 'Dev Tester' : '');
+  const [joinEmail, setJoinEmail] = useState(devMode ? 'dev@test.focuslinks.in' : '');
+  const [membershipId, setMembershipId] = useState(devMode ? 'DEV001' : '');
   const [joinError, setJoinError] = useState('');
-  const [agreedPrecautions, setAgreedPrecautions] = useState(false);
+  const [agreedPrecautions, setAgreedPrecautions] = useState(!!devMode);
 
   const handleJoin = () => {
     setJoinError('');
@@ -443,6 +443,34 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
   const [joinModalOpen, setJoinModalOpen] = useState(false);
   const [loginModalOpen, setLoginModalOpen] = useState(showLoginOnMount);
   const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, mins: 0, secs: 0 });
+  const [devMode, setDevMode] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  // Detect dev mode and #join hash from URL
+  useEffect(() => {
+    const checkHash = () => {
+      const hash = window.location.hash;
+      // Dev mode: #dev or hash contains dev=true
+      if (hash === '#dev' || hash.includes('dev=true')) {
+        setDevMode(true);
+      }
+      // #join: auto-open the join modal
+      if (hash === '#join' || hash.includes('join=true')) {
+        setJoinModalOpen(true);
+      }
+    };
+    checkHash();
+    window.addEventListener('hashchange', checkHash);
+    return () => window.removeEventListener('hashchange', checkHash);
+  }, []);
+
+  // Share link handler
+  const handleShareLink = async () => {
+    const shareUrl = window.location.origin + window.location.pathname + '#join';
+    await navigator.clipboard.writeText(shareUrl);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  };
 
   // Countdown timer
   useEffect(() => {
@@ -474,12 +502,14 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
                 <span className="text-base sm:text-lg font-bold tracking-tight text-blue-500">Focus</span>
                 <span className="text-base sm:text-lg font-bold tracking-tight text-white">Meet</span>
               </div>
+              {devMode && (
+                <span className="text-[9px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded ml-1">DEV</span>
+              )}
             </div>
 
             <nav className="hidden md:flex items-center gap-6">
               <a href="#hero" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Home</a>
               <a href="#event" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Event</a>
-              <a href="#upcoming" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Upcoming</a>
               <a href="#leaderboard" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Leaderboard</a>
               <Button onClick={() => setJoinModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold h-8 px-4">
                 Join Event
@@ -513,7 +543,6 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               <nav className="flex flex-col gap-1">
                 <a href="#hero" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Home</a>
                 <a href="#event" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Event</a>
-                <a href="#upcoming" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Upcoming</a>
                 <a href="#leaderboard" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Leaderboard</a>
                 <button onClick={() => { setMobileMenuOpen(false); setLoginModalOpen(true); }} className="px-3 py-2.5 rounded-lg text-sm text-emerald-400 hover:bg-emerald-500/10 font-semibold text-left w-full">
                   Sign In
@@ -626,6 +655,13 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               <MapPin className="w-4 h-4 text-blue-400" />
               <span className="text-xs sm:text-sm font-medium text-zinc-300">Online</span>
             </div>
+            <button
+              onClick={handleShareLink}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <Link2 className="w-4 h-4 text-blue-400" />
+              <span className="text-xs sm:text-sm font-medium text-zinc-300">{linkCopied ? 'Link copied!' : 'Share'}</span>
+            </button>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
@@ -674,35 +710,6 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
                 </div>
               </CardContent>
             </Card>
-          </div>
-        </div>
-      </section>
-
-      {/* ===== UPCOMING EVENTS ===== */}
-      <section id="upcoming" className="relative z-10 px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-20">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-8 sm:mb-12">
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-600/15 border border-blue-500/30 mb-4">
-              <Calendar className="w-3.5 h-3.5 text-blue-400" />
-              <span className="text-xs font-semibold text-blue-400">UPCOMING EVENTS</span>
-            </div>
-            <h2 className="text-xl sm:text-3xl lg:text-4xl font-bold text-zinc-100 mb-3">Upcoming Events</h2>
-            <p className="text-xs sm:text-sm text-zinc-500 max-w-lg mx-auto">
-              Register now to secure your spot. Each session offers FL Credits and certificates.
-            </p>
-          </div>
-
-          <div className="max-w-md mx-auto">
-            {/* Event 1 — Beyond Ortho-K (current) */}
-            <EventCard
-              title="Beyond Ortho-K: Myopia Management with Contact Lenses"
-              speaker="Manish Bhagat"
-              speakerRole="Head — Visual Eyez India"
-              speakerInitials="MB"
-              date="May 6, 2026"
-              time="7:00 PM IST"
-              isLive
-            />
           </div>
         </div>
       </section>
@@ -815,7 +822,6 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
             <div className="flex items-center gap-4 sm:gap-6">
               <a href="#hero" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Home</a>
               <a href="#event" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Event</a>
-              <a href="#upcoming" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Upcoming</a>
               <a href="#leaderboard" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Leaderboard</a>
               <span className="text-[11px] text-zinc-600">|</span>
               <a href="#" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Help</a>
@@ -830,7 +836,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
       </footer>
 
       {/* Join Room Modal */}
-      <JoinRoomModal open={joinModalOpen} onClose={() => setJoinModalOpen(false)} onSwitchToLogin={() => setLoginModalOpen(true)} />
+      <JoinRoomModal key={joinModalOpen ? 'open' : 'closed'} open={joinModalOpen} onClose={() => setJoinModalOpen(false)} onSwitchToLogin={() => setLoginModalOpen(true)} devMode={devMode} />
 
       {/* Login Modal */}
       <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
