@@ -3,6 +3,8 @@
 // Host uploads to ONLY Roots. Roots absorb and redistribute.
 // Bandwidth stays FLAT for host regardless of viewer count.
 
+import { DynamicScalingEngine, ScalingTier, TIER_CONFIGS, TierConfig } from './dynamic-scaling';
+
 export type TreeLayer = 'host' | 'root' | 'trunk' | 'branch' | 'sub-branch' | 'leaf';
 
 export interface HoneycombCell {
@@ -50,13 +52,16 @@ export interface TreeTopology {
 
 export class TreeHoneycombEngine {
   private topology: TreeTopology;
-  private maxRoots = 15;
-  private maxBranchesPerRoot = 8;
-  private maxViewersPerCell = 10;
-  private minViewersPerCell = 4;
-  private hostUploadLimit = 15;  // Host can connect to more roots for 1000+ users
+  private scalingEngine: DynamicScalingEngine;
+
+  private get maxRoots(): number { return this.scalingEngine.getCurrentConfig().maxRoots; }
+  private get maxBranchesPerRoot(): number { return this.scalingEngine.getCurrentConfig().branchesPerRoot; }
+  private get maxViewersPerCell(): number { return this.scalingEngine.getCurrentConfig().viewersPerBranch || this.scalingEngine.getCurrentConfig().viewersPerSubBranch || 10; }
+  private get minViewersPerCell(): number { return Math.max(2, Math.floor(this.maxViewersPerCell * 0.4)); }
+  private get hostUploadLimit(): number { return this.scalingEngine.getCurrentConfig().maxRoots; }
   
   constructor(hostPeerId: string) {
+    this.scalingEngine = new DynamicScalingEngine();
     this.topology = {
       hostPeerId,
       roots: new Map(),
@@ -83,13 +88,20 @@ export class TreeHoneycombEngine {
   
   // Select best candidates for root from available viewers
   selectRootCandidates(viewers: Array<{ peerId: string; displayName: string; upKbps: number; rttMs: number; connectedAt: number }>): string[] {
+    const config = this.scalingEngine.getCurrentConfig();
     const currentRootCount = this.topology.roots.size;
-    const needed = Math.max(0, this.maxRoots - currentRootCount);
+    const needed = Math.max(0, config.targetRoots - currentRootCount);
     if (needed === 0) return [];
     
-    // Score each viewer: prefer high upload, low RTT, long uptime
+    // WHY this filter: Each tier has different requirements.
+    // Tier 2: lower bar (any desktop with 2Mbps)
+    // Tier 4-5: higher bar (need 3Mbps+ and <150ms RTT for deep trees)
+    const minUpKbps = config.tier === 'tier5' ? 3000 : config.tier === 'tier4' ? 2500 : 2000;
+    const maxRttMs = config.tier === 'tier5' ? 150 : config.tier === 'tier4' ? 180 : 200;
+    const minUptimeMs = config.tier === 'tier5' ? 30000 : 20000; // Higher tiers need more stable roots
+    
     const scored = viewers
-      .filter(v => v.upKbps >= 2000 && v.rttMs <= 200 && (Date.now() - v.connectedAt) >= 20000)
+      .filter(v => v.upKbps >= minUpKbps && v.rttMs <= maxRttMs && (Date.now() - v.connectedAt) >= minUptimeMs)
       .map(v => ({
         peerId: v.peerId,
         score: (v.upKbps / 100) * 0.5 + (1 - v.rttMs / 500) * 100 * 0.3 + Math.min(20, (Date.now() - v.connectedAt) / 60000 * 2) * 0.2,
@@ -337,14 +349,15 @@ export class TreeHoneycombEngine {
   
   // ===== CAPACITY PLANNING =====
 
-  getCapacityForViewers(viewerCount: number): { neededRoots: number; neededBranches: number; neededCells: number; hostUploadKbps: number } {
-    const viewersPerCell = this.maxViewersPerCell;
-    const neededCells = Math.ceil(viewerCount / viewersPerCell);
-    const neededBranches = Math.ceil(neededCells / this.maxBranchesPerRoot);
-    const neededRoots = Math.max(1, Math.ceil(neededBranches / this.maxBranchesPerRoot));
-    const hostUploadKbps = neededRoots * 2500; // 2.5 Mbps per root at 720p
+  getCapacityForViewers(viewerCount: number): { neededRoots: number; neededBranches: number; neededCells: number; hostUploadKbps: number; tier: ScalingTier } {
+    const tier = this.scalingEngine.getTierForViewers(viewerCount);
+    const config = TIER_CONFIGS[tier];
+    const neededRoots = this.scalingEngine.calculateNeededRoots(viewerCount);
+    const neededBranches = neededRoots * config.branchesPerRoot;
+    const neededCells = neededBranches * (config.subBranchesPerBranch > 0 ? config.subBranchesPerBranch : config.viewersPerBranch);
+    const hostUploadKbps = neededRoots * (config.hostQuality === '360p' ? 800 : config.hostQuality === '480p' ? 1500 : 2500);
 
-    return { neededRoots, neededBranches, neededCells, hostUploadKbps };
+    return { neededRoots, neededBranches, neededCells, hostUploadKbps, tier };
   }
 
   // ===== REBALANCING =====
@@ -435,6 +448,10 @@ export class TreeHoneycombEngine {
   getStats() {
     const totalViewers = this.topology.leaves.size;
     const capacity = this.getCapacityForViewers(totalViewers);
+    const scalingStats = this.scalingEngine.getStats();
+    const config = this.scalingEngine.getCurrentConfig();
+    const neededRoots = this.scalingEngine.calculateNeededRoots(totalViewers);
+    const currentCapacity = this.scalingEngine.calculateCapacity(this.topology.roots.size, scalingStats.currentTier);
 
     return {
       roots: this.topology.roots.size,
@@ -443,15 +460,83 @@ export class TreeHoneycombEngine {
       leaves: totalViewers,
       totalViewers,
       hostUploadKbps: this.getHostUploadLoad(),
-      maxCapacity: this.topology.roots.size * this.maxBranchesPerRoot * this.maxViewersPerCell,
+      maxCapacity: currentCapacity,
       capacityFor1000: capacity,
-      utilizationPercent: this.topology.roots.size > 0
-        ? Math.round((totalViewers / (this.topology.roots.size * this.maxBranchesPerRoot * this.maxViewersPerCell)) * 100)
+      utilizationPercent: currentCapacity > 0
+        ? Math.round((totalViewers / currentCapacity) * 100)
         : 0,
+      // Dynamic scaling info
+      currentTier: scalingStats.currentTier,
+      tierName: scalingStats.tierName,
+      neededRoots,
+      targetRoots: config.targetRoots,
+      maxTreeDepth: config.maxTreeDepth,
+      hostQuality: config.hostQuality,
+      tierReason: scalingStats.tierReason,
     };
   }
   
   getTopology(): TreeTopology {
     return this.topology;
   }
+
+  /**
+   * Update the scaling tier based on current viewer count.
+   * WHY: The architecture must adapt as users grow. Each tier adds
+   * a new layer to the tree, and every promotion/demotion happens for a reason.
+   * Returns info about what changed and WHY.
+   */
+  updateScalingTier(viewerCount: number): {
+    tierChanged: boolean;
+    newTier: ScalingTier;
+    config: TierConfig;
+    reason: string;
+    actionsNeeded: Array<{ action: string; reason: string }>;
+  } {
+    const result = this.scalingEngine.updateTier(viewerCount);
+
+    const actionsNeeded: Array<{ action: string; reason: string }> = [];
+
+    if (result.tierChanged) {
+      const newConfig = result.config;
+
+      // REASON: We need more roots
+      const neededRoots = this.scalingEngine.calculateNeededRoots(viewerCount);
+      if (neededRoots > this.topology.roots.size) {
+        actionsNeeded.push({
+          action: `Promote ${neededRoots - this.topology.roots.size} more root nodes`,
+          reason: `Tier ${newConfig.name} requires ${neededRoots} roots for ${viewerCount} viewers. Currently have ${this.topology.roots.size}.`,
+        });
+      }
+
+      // REASON: We need sub-roots for failover
+      if (newConfig.targetSubRoots > 0) {
+        actionsNeeded.push({
+          action: `Provision ${newConfig.targetSubRoots} sub-root backups`,
+          reason: `${newConfig.targetSubRoots} sub-roots needed for failover at tier ${newConfig.name}.`,
+        });
+      }
+
+      // REASON: Tree depth increases
+      actionsNeeded.push({
+        action: `Max tree depth set to ${newConfig.maxTreeDepth}`,
+        reason: `Deeper trees allow more viewers but add latency. ${newConfig.maxTreeDepth} levels for ${newConfig.name}.`,
+      });
+
+      // REASON: Host quality may change
+      if (newConfig.hostQuality !== '720p') {
+        actionsNeeded.push({
+          action: `Host quality: ${newConfig.hostQuality}`,
+          reason: `At ${viewerCount}+ viewers, host must serve ${newConfig.targetRoots}+ roots. Lower quality = less upload per root.`,
+        });
+      }
+    }
+
+    return { ...result, actionsNeeded };
+  }
+
+  /**
+   * Expose the scaling engine for external queries.
+   */
+  getScalingEngine(): DynamicScalingEngine { return this.scalingEngine; }
 }

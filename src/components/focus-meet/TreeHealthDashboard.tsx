@@ -2,6 +2,7 @@
 
 import { useRoomStore } from '@/store/room-store';
 import { TreeNode, RoomInfo } from '@/lib/types';
+import { DynamicScalingEngine, ScalingTier, TIER_CONFIGS } from '@/lib/dynamic-scaling';
 import {
   Activity, Zap, Shield, Users, TrendingUp, TrendingDown,
   Wifi, WifiOff, Server, AlertTriangle, CheckCircle2, XCircle,
@@ -9,10 +10,27 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
+const TIER_COLORS: Record<ScalingTier, { bg: string; text: string; border: string }> = {
+  tier1: { bg: 'bg-zinc-500/20', text: 'text-zinc-400', border: 'border-zinc-600' },
+  tier2: { bg: 'bg-blue-500/20', text: 'text-blue-400', border: 'border-blue-600' },
+  tier3: { bg: 'bg-emerald-500/20', text: 'text-emerald-400', border: 'border-emerald-600' },
+  tier4: { bg: 'bg-amber-500/20', text: 'text-amber-400', border: 'border-amber-600' },
+  tier5: { bg: 'bg-red-500/20', text: 'text-red-400', border: 'border-red-600' },
+};
+
+const TIER_LABELS: Record<ScalingTier, string> = {
+  tier1: 'Direct',
+  tier2: 'Roots',
+  tier3: 'Roots+Branches',
+  tier4: 'Deep Tree',
+  tier5: 'Super-Tree',
+};
+
 /**
- * TreeHealthDashboard — Real-time monitoring for 1000+ user webinars
+ * TreeHealthDashboard — Real-time monitoring for 10K user webinars
  * Shows root/sub-root status, bandwidth distribution, relay health,
- * and capacity metrics. Essential for hosts on mobile devices.
+ * tier-aware capacity metrics, and purposeful scaling recommendations.
+ * Essential for hosts on mobile devices.
  */
 export function TreeHealthDashboard() {
   const { nodes, roomInfo, myNode, networkHealth, engine } = useRoomStore();
@@ -52,8 +70,17 @@ export function TreeHealthDashboard() {
       return sum + n.bandwidth.rttMs;
     }, 0) / Math.max(1, allNodes.filter(n => n.bandwidth.rttMs > 0 && n.bandwidth.rttMs < 999).length);
 
-  // Capacity estimate for 1000+ users
-  const capacityForCurrentRoots = rootNodes.length * 8 * 10; // roots * branches * cellSize
+  // Dynamic scaling info
+  const scalingInfo = engine?.getScalingInfo();
+  const currentTier = (scalingInfo?.tier as ScalingTier) ?? 'tier1';
+  const tierConfig = TIER_CONFIGS[currentTier];
+  const tierColor = TIER_COLORS[currentTier];
+  const recommendations = scalingInfo?.recommendations ?? [];
+
+  // Capacity estimate — tier-aware
+  const capacityForCurrentRoots = rootNodes.length > 0
+    ? rootNodes.length * (tierConfig.branchesPerRoot || 1) * (tierConfig.subBranchesPerBranch > 0 ? tierConfig.subBranchesPerBranch * tierConfig.viewersPerSubBranch : tierConfig.viewersPerBranch || tierConfig.rootRelayCapacity)
+    : 0;
   const rootsNeededFor1000 = Math.ceil(1000 / (8 * 10)); // 13 roots for 1000 viewers
   const rootsNeededForCurrent = Math.ceil(viewerCount / (8 * 10));
 
@@ -71,38 +98,18 @@ export function TreeHealthDashboard() {
         <Badge className={`text-[8px] border-0 ${churnScore > 70 ? 'bg-emerald-500/20 text-emerald-400' : churnScore > 40 ? 'bg-amber-500/20 text-amber-400' : 'bg-red-500/20 text-red-400'}`}>
           {churnScore > 70 ? 'STABLE' : churnScore > 40 ? 'DEGRADED' : 'UNSTABLE'}
         </Badge>
+        <Badge className={`text-[8px] border-0 ${tierColor.bg} ${tierColor.text}`}>
+          {TIER_LABELS[currentTier]}
+        </Badge>
       </div>
 
       {/* Capacity Overview */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <MetricCard
-          icon={<Users className="w-3.5 h-3.5 text-blue-400" />}
-          label="Viewers"
-          value={viewerCount}
-          subtext={`of ${roomInfo.peakParticipants} peak`}
-          color="blue"
-        />
-        <MetricCard
-          icon={<Zap className="w-3.5 h-3.5 text-emerald-400" />}
-          label="Root Nodes"
-          value={rootNodes.length}
-          subtext={`${healthyRoots} healthy, ${degradedRoots} degraded`}
-          color="emerald"
-        />
-        <MetricCard
-          icon={<Shield className="w-3.5 h-3.5 text-cyan-400" />}
-          label="Sub-Roots"
-          value={subRootNodes.length}
-          subtext="Backup relay nodes"
-          color="cyan"
-        />
-        <MetricCard
-          icon={<Gauge className="w-3.5 h-3.5 text-violet-400" />}
-          label="Utilization"
-          value={`${utilizationPct}%`}
-          subtext={`${totalRelayLoad}/${totalRelayCapacity} relay slots`}
-          color={utilizationPct > 80 ? 'red' : utilizationPct > 50 ? 'amber' : 'emerald'}
-        />
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        <MetricCard icon={<Users className="w-3.5 h-3.5 text-blue-400" />} label="Viewers" value={viewerCount} subtext={`of ${roomInfo.peakParticipants} peak`} color="blue" />
+        <MetricCard icon={<Zap className="w-3.5 h-3.5 text-emerald-400" />} label="Roots" value={rootNodes.length} subtext={`Target: ${tierConfig.targetRoots}`} color="emerald" />
+        <MetricCard icon={<Shield className="w-3.5 h-3.5 text-cyan-400" />} label="Sub-Roots" value={subRootNodes.length} subtext={`Target: ${tierConfig.targetSubRoots}`} color="cyan" />
+        <MetricCard icon={<Gauge className="w-3.5 h-3.5 text-violet-400" />} label="Utilization" value={`${utilizationPct}%`} subtext={`${totalRelayLoad}/${totalRelayCapacity} relay`} color={utilizationPct > 80 ? 'red' : utilizationPct > 50 ? 'amber' : 'emerald'} />
+        <MetricCard icon={<Activity className="w-3.5 h-3.5 text-amber-400" />} label="Tier" value={TIER_LABELS[currentTier]} subtext={`Max ${tierConfig.maxViewers.toLocaleString()}`} color={currentTier === 'tier5' ? 'red' : currentTier === 'tier4' ? 'amber' : 'emerald'} />
       </div>
 
       {/* Host Bandwidth */}
@@ -225,14 +232,43 @@ export function TreeHealthDashboard() {
         </div>
       </div>
 
+      {/* Scaling Recommendations — WHY things happen */}
+      {recommendations.length > 0 && (
+        <div className="bg-zinc-900/60 rounded-lg p-3 border border-zinc-800">
+          <div className="flex items-center gap-1.5 mb-2">
+            <TrendingUp className="w-3 h-3 text-violet-400" />
+            <span className="text-zinc-400 font-medium">Scaling Actions</span>
+            <span className="text-[9px] text-zinc-600 ml-1">— why things happen</span>
+          </div>
+          <div className="space-y-1.5">
+            {recommendations.map((rec, i) => (
+              <div key={i} className="flex items-start gap-2 py-1.5 px-2 rounded bg-zinc-800/50">
+                <span className={`text-[9px] font-bold mt-0.5 ${
+                  rec.priority === 'critical' ? 'text-red-400' :
+                  rec.priority === 'high' ? 'text-amber-400' :
+                  rec.priority === 'normal' ? 'text-blue-400' : 'text-zinc-500'
+                }`}>
+                  {rec.priority.toUpperCase()}
+                </span>
+                <div className="flex-1">
+                  <div className="text-[11px] text-zinc-300">{rec.action}</div>
+                  <div className="text-[9px] text-zinc-600 italic">{rec.reason}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Architecture Summary */}
       <div className="bg-zinc-900/40 rounded-lg p-3 border border-zinc-800/50">
         <div className="text-[10px] text-zinc-600 space-y-0.5">
-          <p>🌳 Architecture: Host → {rootNodes.length} Roots → Branches → Leaves</p>
-          <p>📡 Host uploads to {rootNodes.length} roots only. Roots relay to branches/leaves.</p>
-          <p>🛡️ {subRootNodes.length} sub-roots ready for instant failover.</p>
-          <p>⚡ Relay selection optimized: O(roots) for {viewerCount} viewers.</p>
-          {isLowBandwidth && <p className="text-amber-500">⚠️ Low bandwidth detected. Root count reduced to {effectiveMaxRoots}.</p>}
+          <p>🏗️ Tier {currentTier.replace('tier', '')}: {tierConfig.reason}</p>
+          <p>🌳 Tree: Host → {rootNodes.length} Roots → Branches → Leaves (depth ≤ {tierConfig.maxTreeDepth})</p>
+          <p>📡 Host quality: {tierConfig.hostQuality} | {rootNodes.length > 0 ? `Only uploads to ${rootNodes.length} roots` : 'Serves viewers directly'}</p>
+          <p>🛡️ {subRootNodes.length} sub-roots ready for instant failover</p>
+          <p>📊 Capacity: {capacityForCurrentRoots.toLocaleString()} viewers | Target: {tierConfig.maxViewers.toLocaleString()}</p>
+          {isLowBandwidth && <p className="text-amber-500">⚠️ Low bandwidth: max {effectiveMaxRoots} roots (was {tierConfig.maxRoots})</p>}
         </div>
       </div>
     </div>

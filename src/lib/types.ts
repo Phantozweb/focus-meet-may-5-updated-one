@@ -101,6 +101,9 @@ export interface TreeNode {
   isSubRoot: boolean;         // Is this a sub-root backup node?
   rootPriority: number;       // Priority for root selection (0 = not a root)
   streamBufferMs: number;     // How much stream this root has buffered (for failover)
+  isSubBranch: boolean;       // Is this a sub-branch (tier4+)? Sub-branches relay to leaf viewers
+  subBranchPeerIds: string[]; // Sub-branches under this branch (tier4+)
+  treeLayer: 'host' | 'root' | 'branch' | 'sub-branch' | 'leaf'; // Which layer in the scaling tree
 }
 
 // ============ CLUSTER ============
@@ -337,7 +340,7 @@ export const ICE_SERVERS: RTCIceServer[] = [
 // Chat limits
 export const CHAT_MAX_LENGTH = 500;
 export const CHAT_THROTTLE_MS = 400;
-export const MAX_PARTICIPANTS = 2000;         // Theoretical max (practical ~1200)
+export const MAX_PARTICIPANTS = 10000;        // Dynamic scaling engine supports up to 10,000 users
 export const MAX_RELAY_HOPS = 7;              // Allow deeper trees for 700+
 
 // ============ STABILITY SAFEGUARDS ============
@@ -364,10 +367,10 @@ export const BRANCHING_FACTOR_TARGET = 5;        // Target branching factor for 
 // ============ ROOT ARCHITECTURE ============
 // Invisible dummy relay nodes that keep the webinar alive
 
-export const ROOT_NODE_TARGET = 12;              // Target 12 roots for 1000+ users
+export const ROOT_NODE_TARGET = 30;              // Dynamic engine overrides this; baseline for tier4+
 export const ROOT_NODE_MIN = 5;                   // Minimum 5 roots before stable
-export const ROOT_NODE_MAX = 20;                  // Allow up to 20 roots for massive webinars
-export const SUB_ROOT_TARGET = 10;                // More sub-root backups for 1000+ users
+export const ROOT_NODE_MAX = 80;                  // Allows tier5 scaling (60 target, 80 max)
+export const SUB_ROOT_TARGET = 25;                // Dynamic engine targets 25 sub-roots at scale
 export const ROOT_SELECTION_INTERVAL = 30000;     // Re-evaluate roots every 30s
 export const ROOT_MIN_UPTIME_MS = 20000;          // Must be connected 20s before eligible
 export const ROOT_MIN_BANDWIDTH_KBPS = 2000;      // Minimum 2Mbps upload to be a root

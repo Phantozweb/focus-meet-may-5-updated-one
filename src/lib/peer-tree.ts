@@ -87,6 +87,7 @@ import {
   PEERJS_SERVER_PATH,
 } from './types';
 import { TreeHoneycombEngine } from './tree-honeycomb-engine';
+import { DynamicScalingEngine, ScalingTier, TIER_CONFIGS } from './dynamic-scaling';
 import { CoopScheduler, coopScheduler } from './coop-scheduler';
 import { AdaptiveDeliveryEngine } from './adaptive-delivery';
 import { ReliableChannel, type ReliableMessage, type AckMessage } from './reliable-channel';
@@ -202,6 +203,9 @@ export class FractalMeshEngine {
 
   // Tree-Honeycomb architecture engine
   private honeycombEngine: TreeHoneycombEngine | null = null;
+
+  // Dynamic scaling engine — tier-aware tree management
+  private scalingEngine: DynamicScalingEngine | null = null;
 
   // Attendance persistence timer
   private attendancePersistenceTimer: ReturnType<typeof setInterval> | null = null;
@@ -337,6 +341,9 @@ export class FractalMeshEngine {
 
     // Initialize Tree-Honeycomb engine for the host
     this.honeycombEngine = new TreeHoneycombEngine(peerId);
+
+    // Initialize Dynamic Scaling Engine for tier-aware tree management
+    this.scalingEngine = new DynamicScalingEngine();
 
     // Initialize Adaptive Delivery Engine for bandwidth-aware content delivery
     this.adaptiveDelivery = new AdaptiveDeliveryEngine();
@@ -544,6 +551,10 @@ export class FractalMeshEngine {
       isSubRoot: false,
       rootPriority: 0,
       streamBufferMs: 0,
+      // Dynamic scaling fields
+      isSubBranch: false,
+      subBranchPeerIds: [],
+      treeLayer: clusterRole === 'supernode' ? 'host' : clusterRole === 'leaf' ? 'leaf' : 'branch',
     };
   }
 
@@ -1037,17 +1048,27 @@ export class FractalMeshEngine {
     let parentNode: TreeNode;
 
     if (this.rootNodes.size > 0 && this.myNode) {
+      const config = this.scalingEngine?.getCurrentConfig();
+      const currentTier = config?.tier ?? 'tier1';
+
+      // WHY: In tier 4-5, we have deep trees (roots → branches → sub-branches).
+      // In tier 2-3, roots serve viewers more directly.
+      // This affects HOW we assign viewers to the tree.
+
       // Find the least-loaded root
       const bestRoot = this.selectBestRoot();
       if (bestRoot) {
         parentNode = bestRoot;
       } else {
-        // All roots are full — use regular relay selection
+        // All roots are full — this means we need more roots OR
+        // we need to assign to a branch/sub-branch
+        // WHY: In tier 4+, full roots should trigger branch assignment
         const bestRelay = this.selectBestRelay(device || this.myDevice);
         parentNode = bestRelay || this.myNode;
       }
     } else {
-      // No roots yet — use regular relay selection
+      // No roots yet — WHY: We're in tier 1 (under 50 viewers)
+      // or roots haven't been selected yet (first 20 seconds)
       const bestRelay = this.selectBestRelay(device || this.myDevice);
       parentNode = bestRelay || this.myNode;
     }
@@ -3921,6 +3942,24 @@ export class FractalMeshEngine {
   private runRootSelection() {
     if (!this.roomInfo || !this.myNode || !this.isHost()) return;
 
+    // WHY: Only promote roots when the scaling tier requires it.
+    // Each promotion happens FOR A REASON — the viewer count has grown
+    // and the architecture needs more roots to handle the load.
+    if (this.scalingEngine && this.honeycombEngine) {
+      const viewerCount = this.nodes.size - 1; // Exclude host
+      const tierUpdate = this.honeycombEngine.updateScalingTier(viewerCount);
+
+      if (tierUpdate.tierChanged) {
+        console.log(`[FocusMeet] ${tierUpdate.reason}`);
+        for (const action of tierUpdate.actionsNeeded) {
+          console.log(`[FocusMeet] → ${action.action}: ${action.reason}`);
+        }
+
+        // WHY: When tier changes, host quality may need to change too.
+        this.applyHostQuality();
+      }
+    }
+
     // Find candidates for root promotion
     const candidates: Array<{ peerId: string; displayName: string; upKbps: number; rttMs: number; connectedAt: number }> = [];
 
@@ -4266,6 +4305,7 @@ export class FractalMeshEngine {
     this.myNode.canRelay = true;
     this.myNode.maxRelayCapacity = Math.max(this.myNode.maxRelayCapacity, 10); // Roots get extra capacity
     this.myNode.streamBufferMs = msg.payload.bufferSizeMs || msg.payload.streamBufferMs || ROOT_BUFFER_SIZE_MS;
+    this.myNode.treeLayer = 'root';
     this.nodes.set(this.myNode.peerId, this.myNode);
     // IMPORTANT: We keep myNode.role as 'viewer' — root is invisible
 
@@ -4494,9 +4534,11 @@ export class FractalMeshEngine {
     this.isLowBandwidthHost = this.hostUploadKbps < LOW_BANDWIDTH_THRESHOLD_KBPS;
     
     if (this.isLowBandwidthHost) {
-      // Low bandwidth: reduce roots to minimize host upload
-      this.effectiveMaxRoots = LOW_BANDWIDTH_MAX_ROOTS;
-      
+      // WHY: Low-bandwidth host can only serve fewer roots.
+      // Use the MINIMUM of the tier's max roots and the low-bandwidth limit.
+      const tierMaxRoots = this.scalingEngine?.getCurrentConfig()?.maxRoots ?? ROOT_NODE_MAX;
+      this.effectiveMaxRoots = Math.min(LOW_BANDWIDTH_MAX_ROOTS, tierMaxRoots);
+
       // If we have too many roots, demote the least healthy ones
       if (this.rootNodes.size > this.effectiveMaxRoots) {
         const excessCount = this.rootNodes.size - this.effectiveMaxRoots;
@@ -4507,8 +4549,8 @@ export class FractalMeshEngine {
         }
       }
     } else {
-      // Good bandwidth: use full root capacity
-      this.effectiveMaxRoots = ROOT_NODE_MAX;
+      // WHY: Good bandwidth — use the tier's maximum roots, not a hardcoded number.
+      this.effectiveMaxRoots = this.scalingEngine?.getCurrentConfig()?.maxRoots ?? ROOT_NODE_MAX;
     }
     
     if (wasLowBandwidth !== this.isLowBandwidthHost) {
@@ -4544,6 +4586,46 @@ export class FractalMeshEngine {
       uploadKbps: this.hostUploadKbps,
       isLowBandwidth: this.isLowBandwidthHost,
       effectiveMaxRoots: this.effectiveMaxRoots,
+    };
+  }
+
+  /** Apply host quality based on current scaling tier.
+   *  WHY: Higher tiers need more roots = more outbound streams from host.
+   *  Lower quality per stream = more streams the host can serve.
+   */
+  applyHostQuality() {
+    if (!this.localStream || !this.scalingEngine) return;
+
+    const quality = this.scalingEngine.getHostQuality();
+    const vt = this.localStream.getVideoTracks()[0];
+    if (vt) {
+      vt.applyConstraints({
+        width: { ideal: quality.width },
+        height: { ideal: quality.height },
+        frameRate: { ideal: quality.fps },
+      }).then(() => {
+        console.log(`[FocusMeet] Host quality set to ${quality.height}p. Reason: ${quality.reason}`);
+      }).catch(() => {
+        console.warn('[FocusMeet] Could not apply host quality adaptation');
+      });
+    }
+  }
+
+  /** Get current scaling tier info for the UI */
+  getScalingInfo(): { tier: string; tierName: string; config: any; recommendations: Array<{ action: string; reason: string; priority: string }> } | null {
+    if (!this.scalingEngine) return null;
+
+    const stats = this.scalingEngine.getStats();
+    const recommendations = this.scalingEngine.getRecommendations(
+      this.rootNodes.size,
+      this.nodes.size - 1
+    );
+
+    return {
+      tier: stats.currentTier,
+      tierName: stats.tierName,
+      config: stats.config,
+      recommendations,
     };
   }
 
