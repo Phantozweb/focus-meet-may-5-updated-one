@@ -250,7 +250,8 @@ export type SignalMessageType =
   | 'slide-broadcast'
   | 'annotation-update'
   | 'co-host-assign'
-  | 'co-host-revoke';
+  | 'co-host-revoke'
+  | 'content-chunk';
 
 export interface SignalMessage {
   type: SignalMessageType;

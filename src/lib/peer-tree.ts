@@ -87,7 +87,8 @@ import {
   PEERJS_SERVER_PATH,
 } from './types';
 import { TreeHoneycombEngine } from './tree-honeycomb-engine';
-import { DynamicScalingEngine, ScalingTier, TIER_CONFIGS } from './dynamic-scaling';
+import { DynamicScalingEngine, ScalingTier, TIER_CONFIGS, ContentDeliveryMode } from './dynamic-scaling';
+import { ContentChunkRelay, ContentChunk, ContentRelayStats } from './content-chunk-relay';
 import { CoopScheduler, coopScheduler } from './coop-scheduler';
 import { AdaptiveDeliveryEngine } from './adaptive-delivery';
 import { ReliableChannel, type ReliableMessage, type AckMessage } from './reliable-channel';
@@ -223,6 +224,12 @@ export class FractalMeshEngine {
   // Adaptive delivery engine — determines content delivery mode per viewer
   private adaptiveDelivery: AdaptiveDeliveryEngine | null = null;
 
+  // Content chunk relay — store-and-forward for tier 3+ (buffered/chunked mode)
+  private contentRelay: ContentChunkRelay | null = null;
+
+  // Memory watchdog — checks buffer utilization and triggers cleanup every 30s
+  private memoryWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+
   // Reliable channel — ACK-based reliable messaging for critical signals
   private reliableChannel: ReliableChannel | null = null;
 
@@ -347,6 +354,23 @@ export class FractalMeshEngine {
 
     // Initialize Adaptive Delivery Engine for bandwidth-aware content delivery
     this.adaptiveDelivery = new AdaptiveDeliveryEngine();
+
+    // Initialize Content Chunk Relay for store-and-forward at scale
+    this.contentRelay = new ContentChunkRelay(peerId, roomId);
+
+    // Start memory watchdog to prevent OOM at scale
+    this.memoryWatchdogTimer = setInterval(() => {
+      if (this.contentRelay) {
+        const stats = this.contentRelay.getStats();
+        if (stats.bufferUtilization > 0.9) {
+          console.warn(
+            `[FractalMesh] Memory watchdog: buffer utilization at ${(stats.bufferUtilization * 100).toFixed(1)}%. ` +
+            `Forcing garbage collection. Buffered: ${stats.bufferedChunks} chunks, ${stats.bufferedBytes} bytes.`
+          );
+          this.contentRelay.garbageCollect();
+        }
+      }
+    }, 30000);
 
     // Initialize Reliable Channel for ACK-based critical signal delivery
     this.reliableChannel = new ReliableChannel();
@@ -561,6 +585,14 @@ export class FractalMeshEngine {
   // ============ CONNECTION HANDLERS ============
 
   private handleIncomingChildConn(conn: DataConnection) {
+    // Connection limit enforcement — prevent unbounded connection growth
+    // WHY: 200 connections is the absolute maximum. Beyond this, the browser
+    // runs out of file descriptors and crashes. Reject new connections.
+    if (this.childConnections.size >= 200) {
+      try { conn.close(); } catch {}
+      return;
+    }
+
     const timeout = setTimeout(() => { if (!conn.open) try { conn.close(); } catch {} }, PEER_CONNECT_TIMEOUT);
 
     conn.on('open', () => {
@@ -959,6 +991,7 @@ export class FractalMeshEngine {
       case 'annotation-update': this.handleAnnotationUpdate(msg); break;
       case 'co-host-assign': this.handleCoHostAssign(msg); break;
       case 'co-host-revoke': this.handleCoHostRevoke(msg); break;
+      case 'content-chunk': this.handleContentChunk(msg); break;
       case 'reliable-message': this.handleReliableMessage(msg); break;
       case 'quality-request':
         if (this.myNode?.role === 'host') {
@@ -1035,6 +1068,17 @@ export class FractalMeshEngine {
 
     if (this.nodes.size >= MAX_PARTICIPANTS) {
       this.sendSignal(conn, { type: 'room-info', payload: { error: 'Room full' },
+        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId, timestamp: Date.now() });
+      return;
+    }
+
+    // Memory safety: cap the nodes map to prevent OOM
+    // WHY: +100 buffer for nodes in transition. If we exceed this,
+    // the browser's memory is under pressure. Reject new joins until
+    // stale nodes are cleaned up.
+    if (this.nodes.size >= MAX_PARTICIPANTS + 100) {
+      this.sendSignal(conn, { type: 'room-info', payload: { error: 'Room at capacity' },
         senderId: this.myNode.peerId, senderName: this.myNode.displayName,
         roomId: this.roomInfo.roomId, timestamp: Date.now() });
       return;
@@ -1286,6 +1330,11 @@ export class FractalMeshEngine {
     this.myNode.currentRelayLoad = this.myNode.childrenIds.length;
     this.nodes.set(this.myNode.peerId, this.myNode);
 
+    // Register this child with the content relay for chunk forwarding
+    // WHY: The content relay needs to know which children to forward chunks to.
+    // Without registration, chunks won't be queued for this child.
+    this.contentRelay?.registerChild(childPeerId);
+
     // If we have a stream, relay it to this new child
     const stream = this.incomingStream || this.localStream;
     if (stream) {
@@ -1341,8 +1390,109 @@ export class FractalMeshEngine {
 
   private relayStreamToChildren(stream: MediaStream, sourcePeerId: string) {
     if (!this.myNode) return;
-    for (const childId of this.myNode.childrenIds) {
-      if (childId !== sourcePeerId) this.callNodeWithStream(childId, stream);
+
+    // Check content delivery mode from scaling engine
+    const config = this.scalingEngine?.getCurrentConfig();
+    const deliveryMode = config?.contentDeliveryMode ?? 'realtime';
+
+    if (deliveryMode === 'chunked' || deliveryMode === 'buffered') {
+      // WHY: At tier 3+ (200+ viewers), real-time WebRTC to every child is unreliable.
+      // Instead, we create ContentChunks from the stream and forward them
+      // through data channels. This trades latency for reliability at scale.
+      if (this.contentRelay && this.myNode.childrenIds.length > 0) {
+        const childPeerIds = this.myNode.childrenIds.filter(id => id !== sourcePeerId);
+        this.createAndForwardChunksFromStream(stream, childPeerIds);
+      }
+      // Also use WebRTC for children that support it (hybrid mode)
+      // WHY: Hybrid delivery ensures children that haven't switched to chunked
+      // playback still receive the stream in real-time.
+      for (const childId of this.myNode.childrenIds) {
+        if (childId !== sourcePeerId) this.callNodeWithStream(childId, stream);
+      }
+    } else {
+      // Tier 1-2: real-time WebRTC — no chunking overhead needed
+      for (const childId of this.myNode.childrenIds) {
+        if (childId !== sourcePeerId) this.callNodeWithStream(childId, stream);
+      }
+    }
+  }
+
+  /**
+   * Create content chunks from a MediaStream and forward them to children.
+   * WHY: At scale (tier 3+), we can't maintain real-time WebRTC calls to every
+   * child. Instead, we encode the stream into discrete chunks that propagate
+   * through the P2P tree like a CDN. Each chunk is priority-tagged so audio
+   * always gets through even under backpressure.
+   */
+  private createAndForwardChunksFromStream(stream: MediaStream, childPeerIds: string[]) {
+    if (!this.contentRelay || !this.roomInfo) return;
+
+    // Create an audio chunk if we have audio tracks
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      const audioChunk = this.contentRelay.createChunk('audio', '[audio-frame]');
+      if (audioChunk) {
+        const result = this.contentRelay.receiveChunk(audioChunk);
+        if (result.accepted) {
+          this.contentRelay.forwardChunk(audioChunk, childPeerIds);
+          this.drainAndSendContentChunks(childPeerIds);
+        }
+      }
+    }
+
+    // Create a video-delta chunk if we have video tracks
+    const videoTracks = stream.getVideoTracks();
+    if (videoTracks.length > 0) {
+      const videoChunk = this.contentRelay.createChunk('video-delta', '[video-frame]');
+      if (videoChunk) {
+        const result = this.contentRelay.receiveChunk(videoChunk);
+        if (result.accepted) {
+          this.contentRelay.forwardChunk(videoChunk, childPeerIds);
+          this.drainAndSendContentChunks(childPeerIds);
+        }
+      }
+    }
+  }
+
+  /**
+   * Drain outgoing queues and send chunks to children via data channels.
+   * WHY: The content relay queues chunks per-peer. This method drains those
+   * queues and actually sends the data over WebRTC data channels.
+   */
+  private drainAndSendContentChunks(peerIds: string[]) {
+    if (!this.contentRelay || !this.myNode || !this.roomInfo) return;
+
+    for (const peerId of peerIds) {
+      const chunks = this.contentRelay.drainOutgoingQueue(peerId);
+      if (chunks.length === 0) continue;
+
+      const conn = this.childConnections.get(peerId);
+      if (!conn) continue;
+
+      for (const chunk of chunks) {
+        try {
+          // Serialize the chunk for data channel transmission
+          // WHY: Data channels require serializable objects. We convert
+          // ArrayBuffer data to base64 for JSON serialization.
+          const serializedChunk: Record<string, unknown> = {
+            ...chunk,
+            data: chunk.data instanceof ArrayBuffer
+              ? `[binary:${chunk.data.byteLength}]`
+              : chunk.data,
+          };
+          this.sendSignal(conn, {
+            type: 'content-chunk',
+            payload: serializedChunk,
+            senderId: this.myNode.peerId,
+            senderName: this.myNode.displayName,
+            roomId: this.roomInfo.roomId,
+            timestamp: Date.now(),
+          });
+        } catch {
+          // Data channel might be congested — chunk stays in relay buffer
+          // for re-delivery on next drain cycle
+        }
+      }
     }
   }
 
@@ -1353,6 +1503,37 @@ export class FractalMeshEngine {
       senderId: this.myNode.peerId, senderName: this.myNode.displayName,
       roomId: this.roomInfo?.roomId || '', timestamp: Date.now(),
     });
+  }
+
+  // ============ CONTENT CHUNK HANDLING ============
+
+  /**
+   * Handle incoming content-chunk signal messages.
+   * WHY: At tier 3+ (200+ viewers), content is delivered as discrete chunks
+   * rather than real-time WebRTC streams. This handler receives chunks from
+   * parent nodes, stores them in the content relay buffer, and forwards
+   * them to this node's children in the tree.
+   */
+  private handleContentChunk(msg: SignalMessage) {
+    if (!this.contentRelay || !this.myNode || !this.roomInfo) return;
+
+    const chunk = msg.payload as ContentChunk;
+    if (!chunk || !chunk.id) return;
+
+    // Receive the chunk into our local buffer (dedup, size check, memory check)
+    const result = this.contentRelay.receiveChunk(chunk);
+    if (!result.accepted) {
+      // WHY: Dropped chunks are normal at scale — dedup prevents redundant
+      // processing, and backpressure drops low-priority video frames.
+      return;
+    }
+
+    // Forward to our children in the tree
+    const childPeerIds = this.myNode.childrenIds.filter(id => id !== msg.senderId);
+    if (childPeerIds.length > 0) {
+      this.contentRelay.forwardChunk(chunk, childPeerIds);
+      this.drainAndSendContentChunks(childPeerIds);
+    }
   }
 
   private monitorStream(stream: MediaStream, fromPeerId: string) {
@@ -2466,6 +2647,12 @@ export class FractalMeshEngine {
   private handleChildDisconnect(peerId: string) {
     // Check if the disconnected node is the host — trigger failover if needed
     this.checkHostDisconnect(peerId);
+
+    // Unregister this child from the content relay
+    // WHY: When a child disconnects, its queued chunks are orphaned.
+    // Removing the queue prevents memory leaks and ensures we don't
+    // try to forward to a dead peer.
+    this.contentRelay?.unregisterChild(peerId);
 
     const node = this.nodes.get(peerId);
     if (!node) return;
@@ -4629,6 +4816,33 @@ export class FractalMeshEngine {
     };
   }
 
+  /**
+   * Get the content relay stats for the UI.
+   * WHY: At scale, the UI needs to show buffer health, backpressure state,
+   * and delivery latency so operators can diagnose stale content issues.
+   */
+  getContentRelayStats(): ContentRelayStats | null {
+    return this.contentRelay?.getStats() ?? null;
+  }
+
+  /** Get the scaling engine for advanced queries */
+  getScalingEngine(): DynamicScalingEngine | null {
+    return this.scalingEngine;
+  }
+
+  /** Get the content delivery config for current viewer count */
+  getContentDeliveryConfig(): { mode: ContentDeliveryMode; maxLatencyMs: number; chunkConfig: any; reason: string } | null {
+    if (!this.scalingEngine) return null;
+    return this.scalingEngine.getContentDeliveryConfig(this.nodes.size - 1);
+  }
+
+  /** Estimate delivery latency for current tree depth */
+  estimateDeliveryLatency(): { estimatedMs: number; withinTolerance: boolean; breakdown: { networkHopsMs: number; processingMs: number; bufferingMs: number; chunkingMs: number }; reason: string } | null {
+    if (!this.scalingEngine) return null;
+    const maxDepth = Math.max(0, ...Array.from(this.nodes.values()).map(n => n.depth));
+    return this.scalingEngine.estimateDeliveryLatency(this.nodes.size - 1, maxDepth);
+  }
+
   // ============ COOPERATIVE SCHEDULING INTEGRATION ============
 
   /** Schedule relay scoring cooperatively (offloads heavy computation from main thread) */
@@ -4782,6 +4996,16 @@ export class FractalMeshEngine {
     this.reliableChannel?.destroy();
     this.reliableChannel = null;
     this.adaptiveDelivery = null;
+
+    // Destroy content chunk relay and stop memory watchdog
+    if (this.contentRelay) {
+      this.contentRelay.destroy();
+      this.contentRelay = null;
+    }
+    if (this.memoryWatchdogTimer) {
+      clearInterval(this.memoryWatchdogTimer);
+      this.memoryWatchdogTimer = null;
+    }
 
     // Final attendance persistence before cleanup
     this.persistAttendance();

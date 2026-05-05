@@ -2,11 +2,13 @@
 
 import { useRoomStore } from '@/store/room-store';
 import { TreeNode, RoomInfo } from '@/lib/types';
-import { DynamicScalingEngine, ScalingTier, TIER_CONFIGS } from '@/lib/dynamic-scaling';
+import { DynamicScalingEngine, ScalingTier, TIER_CONFIGS, ContentDeliveryMode } from '@/lib/dynamic-scaling';
+import { ContentRelayStats } from '@/lib/content-chunk-relay';
 import {
   Activity, Zap, Shield, Users, TrendingUp, TrendingDown,
   Wifi, WifiOff, Server, AlertTriangle, CheckCircle2, XCircle,
   ArrowUpCircle, ArrowDownCircle, Radio, Gauge, TreePine,
+  Clock, Database, HardDrive,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
@@ -26,10 +28,32 @@ const TIER_LABELS: Record<ScalingTier, string> = {
   tier5: 'Super-Tree',
 };
 
+const DELIVERY_MODE_COLORS: Record<ContentDeliveryMode, { bg: string; text: string; icon: string }> = {
+  realtime: { bg: 'bg-emerald-500/20', text: 'text-emerald-400', icon: '⚡' },
+  buffered: { bg: 'bg-amber-500/20', text: 'text-amber-400', icon: '⏱' },
+  chunked: { bg: 'bg-blue-500/20', text: 'text-blue-400', icon: '📦' },
+};
+
+/** Log-scale mapping for 0-10000 viewer range */
+const LOG_MARKERS = [0, 50, 200, 1000, 5000, 10000];
+
+function viewerToLogPercent(count: number): number {
+  if (count <= 0) return 0;
+  if (count >= 10000) return 100;
+  // Log scale: log(count+1) / log(10001) * 100
+  return (Math.log(count + 1) / Math.log(10001)) * 100;
+}
+
+function formatLatency(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60000).toFixed(1)}min`;
+}
+
 /**
  * TreeHealthDashboard — Real-time monitoring for 10K user webinars
  * Shows root/sub-root status, bandwidth distribution, relay health,
- * tier-aware capacity metrics, and purposeful scaling recommendations.
+ * tier-aware capacity metrics, content delivery mode, and purposeful scaling recommendations.
  * Essential for hosts on mobile devices.
  */
 export function TreeHealthDashboard() {
@@ -77,11 +101,28 @@ export function TreeHealthDashboard() {
   const tierColor = TIER_COLORS[currentTier];
   const recommendations = scalingInfo?.recommendations ?? [];
 
+  // Content delivery info
+  const contentDeliveryConfig = engine?.getContentDeliveryConfig();
+  const deliveryMode: ContentDeliveryMode = contentDeliveryConfig?.mode ?? 'realtime';
+  const deliveryModeColor = DELIVERY_MODE_COLORS[deliveryMode];
+  const maxAcceptableLatency = tierConfig.maxAcceptableLatencyMs;
+
+  // Latency estimate
+  const latencyEstimate = engine?.estimateDeliveryLatency();
+  const estimatedLatencyMs = latencyEstimate?.estimatedMs ?? 0;
+  const withinTolerance = latencyEstimate?.withinTolerance ?? true;
+  const latencyBreakdown = latencyEstimate?.breakdown;
+
+  // Content relay stats
+  const relayStats: ContentRelayStats | null = engine?.getContentRelayStats() ?? null;
+  const bufferUtilizationPct = relayStats ? Math.round(relayStats.bufferUtilization * 100) : 0;
+  const bufferColorClass = bufferUtilizationPct < 50 ? 'text-emerald-400' : bufferUtilizationPct < 85 ? 'text-amber-400' : 'text-red-400';
+  const bufferBarColorClass = bufferUtilizationPct < 50 ? 'bg-emerald-500' : bufferUtilizationPct < 85 ? 'bg-amber-500' : 'bg-red-500';
+
   // Capacity estimate — tier-aware
   const capacityForCurrentRoots = rootNodes.length > 0
     ? rootNodes.length * (tierConfig.branchesPerRoot || 1) * (tierConfig.subBranchesPerBranch > 0 ? tierConfig.subBranchesPerBranch * tierConfig.viewersPerSubBranch : tierConfig.viewersPerBranch || tierConfig.rootRelayCapacity)
-    : 0;
-  const rootsNeededFor1000 = Math.ceil(1000 / (8 * 10)); // 13 roots for 1000 viewers
+    : viewerCount > 0 ? tierConfig.maxViewers : 0;
   const rootsNeededForCurrent = Math.ceil(viewerCount / (8 * 10));
 
   // Network health
@@ -89,10 +130,14 @@ export function TreeHealthDashboard() {
   const joinRate = networkHealth?.joinRate ?? 0;
   const leaveRate = networkHealth?.leaveRate ?? 0;
 
+  // All 5 tiers for the tier progress indicator
+  const allTiers: ScalingTier[] = ['tier1', 'tier2', 'tier3', 'tier4', 'tier5'];
+  const currentTierIndex = allTiers.indexOf(currentTier);
+
   return (
     <div className="flex flex-col gap-3 p-4 text-xs select-none">
       {/* Header */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <TreePine className="w-4 h-4 text-emerald-400" />
         <span className="text-sm font-semibold text-zinc-200">Tree Architecture Health</span>
         <Badge className={`text-[8px] border-0 ${churnScore > 70 ? 'bg-emerald-500/20 text-emerald-400' : churnScore > 40 ? 'bg-amber-500/20 text-amber-400' : 'bg-red-500/20 text-red-400'}`}>
@@ -101,6 +146,63 @@ export function TreeHealthDashboard() {
         <Badge className={`text-[8px] border-0 ${tierColor.bg} ${tierColor.text}`}>
           {TIER_LABELS[currentTier]}
         </Badge>
+        <Badge className={`text-[8px] border-0 ${deliveryModeColor.bg} ${deliveryModeColor.text}`}>
+          {deliveryModeColor.icon} {deliveryMode}
+        </Badge>
+      </div>
+
+      {/* Tier Progress Indicator */}
+      <div className="bg-zinc-900/60 rounded-lg p-3 border border-zinc-800">
+        <div className="flex items-center gap-1.5 mb-2">
+          <TrendingUp className="w-3 h-3 text-violet-400" />
+          <span className="text-zinc-400 font-medium">Tier Progress</span>
+          <span className="text-[9px] text-zinc-600 ml-1">— scaling roadmap</span>
+        </div>
+        <div className="flex gap-0.5 w-full">
+          {allTiers.map((tier, idx) => {
+            const config = TIER_CONFIGS[tier];
+            const isActive = idx === currentTierIndex;
+            const isPast = idx < currentTierIndex;
+            const isFuture = idx > currentTierIndex;
+            const tColor = TIER_COLORS[tier];
+            return (
+              <div
+                key={tier}
+                className={`flex-1 rounded-sm px-1 py-1.5 text-center transition-all ${
+                  isActive
+                    ? `${tColor.bg} border ${tColor.border}`
+                    : isPast
+                    ? 'bg-zinc-700/30 border border-zinc-700/50'
+                    : 'bg-zinc-800/30 border border-zinc-800/50'
+                }`}
+              >
+                <div className={`text-[9px] font-bold ${isActive ? tColor.text : isPast ? 'text-zinc-500' : 'text-zinc-700'}`}>
+                  {config.name}
+                </div>
+                <div className={`text-[7px] ${isActive ? 'text-zinc-400' : 'text-zinc-700'}`}>
+                  {config.minViewers > 0 ? `${config.minViewers}-${config.maxViewers.toLocaleString()}` : `0-${config.maxViewers}`}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Viewer count marker on tier bar */}
+        <div className="relative mt-1">
+          <div className="h-0.5 bg-zinc-800 rounded-full" />
+          <div
+            className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-white border border-zinc-400 shadow-sm"
+            style={{ left: `${Math.max(0, Math.min(98, (currentTierIndex / 4) * 100 + ((viewerCount - tierConfig.minViewers) / Math.max(1, tierConfig.maxViewers - tierConfig.minViewers)) * (100 / 4)))}%` }}
+            title={`${viewerCount} viewers`}
+          />
+        </div>
+        <div className="flex justify-between mt-1 text-[8px] text-zinc-600">
+          <span>0</span>
+          <span>50</span>
+          <span>200</span>
+          <span>1K</span>
+          <span>5K</span>
+          <span>10K</span>
+        </div>
       </div>
 
       {/* Capacity Overview */}
@@ -168,50 +270,68 @@ export function TreeHealthDashboard() {
         )}
       </div>
 
-      {/* Capacity Planning */}
+      {/* Capacity Planning — Logarithmic Scale */}
       <div className="bg-zinc-900/60 rounded-lg p-3 border border-zinc-800">
         <div className="flex items-center gap-1.5 mb-2">
           <TrendingUp className="w-3 h-3 text-violet-400" />
           <span className="text-zinc-400 font-medium">Capacity Planning</span>
+          <span className="text-[9px] text-zinc-600 ml-1">— log scale to 10K</span>
         </div>
         <div className="grid grid-cols-3 gap-2 text-center">
           <div>
-            <div className="text-lg font-bold text-zinc-200">{capacityForCurrentRoots}</div>
+            <div className="text-lg font-bold text-zinc-200">{capacityForCurrentRoots.toLocaleString()}</div>
             <div className="text-[9px] text-zinc-600">Current Capacity</div>
           </div>
           <div>
-            <div className={`text-lg font-bold ${rootNodes.length >= rootsNeededFor1000 ? 'text-emerald-400' : 'text-amber-400'}`}>
-              {rootNodes.length >= rootsNeededFor1000 ? '✓' : '✗'}
+            <div className={`text-lg font-bold ${viewerCount > 1000 ? 'text-emerald-400' : 'text-amber-400'}`}>
+              {viewerCount > 1000 ? '✓' : '—'}
             </div>
-            <div className="text-[9px] text-zinc-600">1000+ Ready</div>
+            <div className="text-[9px] text-zinc-600">1K+ Ready</div>
           </div>
           <div>
             <div className="text-lg font-bold text-zinc-200">{rootsNeededForCurrent}</div>
             <div className="text-[9px] text-zinc-600">Roots Needed</div>
           </div>
         </div>
-        {/* Capacity bar */}
+        {/* Capacity bar — logarithmic scale to 10,000 */}
         <div className="mt-2">
           <div className="flex items-center justify-between text-[10px] text-zinc-500 mb-1">
-            <span>0</span>
-            <span>500</span>
-            <span>1000</span>
-            <span>2000</span>
+            {LOG_MARKERS.map(m => (
+              <span key={m}>{m >= 1000 ? `${m / 1000}K` : m}</span>
+            ))}
           </div>
           <div className="relative h-3 rounded-full bg-zinc-800 overflow-hidden">
+            {/* Viewer count fill */}
             <div
               className="h-full rounded-full bg-emerald-500/40 transition-all"
-              style={{ width: `${Math.min(100, (viewerCount / 2000) * 100)}%` }}
+              style={{ width: `${viewerToLogPercent(viewerCount)}%` }}
             />
+            {/* Capacity marker */}
+            {capacityForCurrentRoots > 0 && (
+              <div
+                className="absolute top-0 h-full w-0.5 bg-emerald-400"
+                style={{ left: `${Math.min(99, viewerToLogPercent(capacityForCurrentRoots))}%` }}
+                title={`Capacity: ${capacityForCurrentRoots.toLocaleString()}`}
+              />
+            )}
+            {/* 1K milestone marker */}
             <div
-              className="absolute top-0 h-full w-0.5 bg-emerald-400"
-              style={{ left: `${Math.min(100, (capacityForCurrentRoots / 2000) * 100)}%` }}
+              className="absolute top-0 h-full w-0.5 bg-amber-400/60"
+              style={{ left: `${viewerToLogPercent(1000)}%` }}
+              title="1,000 users"
             />
+            {/* 5K milestone marker */}
             <div
-              className="absolute top-0 h-full w-0.5 bg-amber-400"
-              style={{ left: '50%' }}
-              title="1000 users"
+              className="absolute top-0 h-full w-0.5 bg-red-400/40"
+              style={{ left: `${viewerToLogPercent(5000)}%` }}
+              title="5,000 users"
             />
+          </div>
+          <div className="flex items-center gap-3 mt-1 text-[8px] text-zinc-600">
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500/40 inline-block" /> Viewers</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-0.5 bg-emerald-400 inline-block" /> Capacity</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-0.5 bg-amber-400/60 inline-block" /> 1K</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-0.5 bg-red-400/40 inline-block" /> 5K</span>
           </div>
         </div>
       </div>
@@ -230,6 +350,158 @@ export function TreeHealthDashboard() {
           <NetworkMetric label="Relay Nodes" value={`${relayNodes.length}`} good={relayNodes.length >= 5} />
           <NetworkMetric label="Leaf Nodes" value={`${leafNodes.length}`} good />
         </div>
+      </div>
+
+      {/* Content Delivery */}
+      <div className="bg-zinc-900/60 rounded-lg p-3 border border-zinc-800">
+        <div className="flex items-center gap-1.5 mb-2">
+          <Radio className="w-3 h-3 text-blue-400" />
+          <span className="text-zinc-400 font-medium">Content Delivery</span>
+        </div>
+
+        {/* Delivery Mode */}
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-1.5">
+            {deliveryMode === 'realtime' && <Zap className="w-3 h-3 text-emerald-400" />}
+            {deliveryMode === 'buffered' && <Clock className="w-3 h-3 text-amber-400" />}
+            {deliveryMode === 'chunked' && <Database className="w-3 h-3 text-blue-400" />}
+            <span className="text-zinc-400 text-[11px]">Mode</span>
+          </div>
+          <Badge className={`text-[9px] border-0 ${deliveryModeColor.bg} ${deliveryModeColor.text}`}>
+            {deliveryMode === 'realtime' ? '⚡ Realtime' : deliveryMode === 'buffered' ? '⏱ Buffered' : '📦 Chunked'}
+          </Badge>
+        </div>
+
+        {/* Latency Info */}
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500 text-[10px]">Max Acceptable</span>
+            <span className="text-zinc-300 font-medium text-[11px]">{formatLatency(maxAcceptableLatency)}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500 text-[10px]">Estimated</span>
+            <span className={`font-medium text-[11px] ${withinTolerance ? 'text-emerald-400' : 'text-red-400'}`}>
+              {formatLatency(estimatedLatencyMs)}
+              {!withinTolerance && ' ⚠'}
+            </span>
+          </div>
+        </div>
+
+        {/* Latency Breakdown */}
+        {latencyBreakdown && (latencyBreakdown.bufferingMs > 0 || latencyBreakdown.chunkingMs > 0) && (
+          <div className="flex gap-1 mb-2 h-2 rounded-full overflow-hidden">
+            {latencyBreakdown.networkHopsMs > 0 && (
+              <div
+                className="bg-blue-500/60"
+                style={{ width: `${(latencyBreakdown.networkHopsMs / Math.max(1, estimatedLatencyMs)) * 100}%` }}
+                title={`Network: ${formatLatency(latencyBreakdown.networkHopsMs)}`}
+              />
+            )}
+            {latencyBreakdown.processingMs > 0 && (
+              <div
+                className="bg-violet-500/60"
+                style={{ width: `${(latencyBreakdown.processingMs / Math.max(1, estimatedLatencyMs)) * 100}%` }}
+                title={`Processing: ${formatLatency(latencyBreakdown.processingMs)}`}
+              />
+            )}
+            {latencyBreakdown.bufferingMs > 0 && (
+              <div
+                className="bg-amber-500/60"
+                style={{ width: `${(latencyBreakdown.bufferingMs / Math.max(1, estimatedLatencyMs)) * 100}%` }}
+                title={`Buffering: ${formatLatency(latencyBreakdown.bufferingMs)}`}
+              />
+            )}
+            {latencyBreakdown.chunkingMs > 0 && (
+              <div
+                className="bg-cyan-500/60"
+                style={{ width: `${(latencyBreakdown.chunkingMs / Math.max(1, estimatedLatencyMs)) * 100}%` }}
+                title={`Chunking: ${formatLatency(latencyBreakdown.chunkingMs)}`}
+              />
+            )}
+          </div>
+        )}
+        {latencyBreakdown && (latencyBreakdown.bufferingMs > 0 || latencyBreakdown.chunkingMs > 0) && (
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[8px] text-zinc-600 mb-2">
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500/60 inline-block" /> Network</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-violet-500/60 inline-block" /> Processing</span>
+            {latencyBreakdown.bufferingMs > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-amber-500/60 inline-block" /> Buffering</span>}
+            {latencyBreakdown.chunkingMs > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-cyan-500/60 inline-block" /> Chunking</span>}
+          </div>
+        )}
+
+        {/* Buffer Health */}
+        {relayStats && (
+          <div className="border-t border-zinc-800 pt-2 mt-1">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <HardDrive className="w-3 h-3 text-zinc-400" />
+              <span className="text-zinc-400 font-medium text-[11px]">Buffer Health</span>
+              {relayStats.isBackpressured && (
+                <Badge className="text-[8px] bg-red-500/20 text-red-400 border-0 h-4 px-1">BACKPRESSURE</Badge>
+              )}
+            </div>
+            <div className="mb-1.5">
+              <div className="flex items-center justify-between text-[10px] mb-0.5">
+                <span className="text-zinc-500">Utilization</span>
+                <span className={`font-medium ${bufferColorClass}`}>{bufferUtilizationPct}%</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${bufferBarColorClass}`}
+                  style={{ width: `${bufferUtilizationPct}%` }}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-600">Buffered Chunks</span>
+                <span className="text-zinc-300">{relayStats.bufferedChunks}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-600">Queue Depth</span>
+                <span className="text-zinc-300">{relayStats.outgoingQueueDepth}</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-1 mt-1.5 text-[9px] text-center">
+              <div>
+                <div className="text-emerald-400 font-bold">{relayStats.chunksSent}</div>
+                <div className="text-zinc-600">Sent</div>
+              </div>
+              <div>
+                <div className="text-blue-400 font-bold">{relayStats.chunksReceived}</div>
+                <div className="text-zinc-600">Recv</div>
+              </div>
+              <div>
+                <div className="text-red-400 font-bold">{relayStats.chunksDropped}</div>
+                <div className="text-zinc-600">Dropped</div>
+              </div>
+              <div>
+                <div className="text-violet-400 font-bold">{relayStats.chunksDeduplicated}</div>
+                <div className="text-zinc-600">Deduped</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Chunk Config (only for buffered/chunked modes) */}
+        {tierConfig.chunkConfig && (
+          <div className="border-t border-zinc-800 pt-2 mt-2">
+            <div className="text-[10px] text-zinc-500 mb-1">Chunk Config</div>
+            <div className="grid grid-cols-3 gap-1.5 text-[9px]">
+              <div>
+                <div className="text-zinc-300">{tierConfig.chunkConfig.segmentDurationMs}ms</div>
+                <div className="text-zinc-600">Segment</div>
+              </div>
+              <div>
+                <div className="text-zinc-300">{tierConfig.chunkConfig.maxBufferSizeMB}MB</div>
+                <div className="text-zinc-600">Buffer</div>
+              </div>
+              <div>
+                <div className="text-zinc-300">{tierConfig.chunkConfig.forwardBatchSize}</div>
+                <div className="text-zinc-600">Batch Size</div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Scaling Recommendations — WHY things happen */}
@@ -268,7 +540,14 @@ export function TreeHealthDashboard() {
           <p>📡 Host quality: {tierConfig.hostQuality} | {rootNodes.length > 0 ? `Only uploads to ${rootNodes.length} roots` : 'Serves viewers directly'}</p>
           <p>🛡️ {subRootNodes.length} sub-roots ready for instant failover</p>
           <p>📊 Capacity: {capacityForCurrentRoots.toLocaleString()} viewers | Target: {tierConfig.maxViewers.toLocaleString()}</p>
+          <p>
+            📡 Delivery: <span className={deliveryModeColor.text}>{deliveryMode}</span> |
+            Est. latency: <span className={withinTolerance ? 'text-emerald-500' : 'text-red-500'}>{formatLatency(estimatedLatencyMs)}</span>
+            {withinTolerance ? ' (within tolerance)' : ' (EXCEEDS tolerance!)'}
+            {tierConfig.chunkConfig && ` | ${tierConfig.chunkConfig.segmentDurationMs}ms segments, ${tierConfig.chunkConfig.maxBufferSizeMB}MB buffer`}
+          </p>
           {isLowBandwidth && <p className="text-amber-500">⚠️ Low bandwidth: max {effectiveMaxRoots} roots (was {tierConfig.maxRoots})</p>}
+          {relayStats?.isBackpressured && <p className="text-red-500">🔴 Backpressure active: buffer at {bufferUtilizationPct}%, dropping low-priority chunks</p>}
         </div>
       </div>
     </div>
