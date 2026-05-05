@@ -389,7 +389,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
                 />
                 <MoreMenuItem
                   icon={<Maximize className="w-4 h-4" />}
-                  label="Network View"
+                  label="Connection Map"
                   active={isTreeVisible}
                   onClick={() => { setTreeVisible(!isTreeVisible); setShowMore(false); }}
                 />

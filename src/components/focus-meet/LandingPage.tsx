@@ -1,34 +1,38 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Video, Users, Zap, Shield, ArrowRight,
-  Copy, Check, Monitor, MessageCircle, Smile,
+  Check, Monitor, MessageCircle, Smile,
   Sun, Moon, Clock, Radio, Calendar,
-  Hand, Headphones, Maximize, Globe,
-  Menu, X, Play, BarChart3, MapPin, Timer,
-  Trophy, AlertTriangle, Wifi, WifiOff, Volume2,
-  Image, Heart, Target, Lightbulb, Flame, Award,
-  Presentation, HeadphonesIcon, Signal,
+  Hand, Headphones,
+  Menu, X, MapPin,
+  Trophy, AlertTriangle, Wifi, Volume2,
+  Image, Lightbulb, Flame,
   Hexagon, Star, MessageSquare, ThumbsUp,
-  Link2, ExternalLink, Key, ShieldCheck,
+  Lock, Mail, Eye,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { useTheme } from '@/components/theme-provider';
-import { BenchmarkEngine } from '@/lib/benchmark';
-import { BenchmarkResult } from '@/lib/types';
 import { motion, AnimatePresence } from 'framer-motion';
-import { generateRoomId, generateAccessToken } from '@/lib/room-system';
 
 // The event room ID — hardcoded so users don't need to type it
 const EVENT_ROOM_ID = 'FM-A3K7';
 const EVENT_ROOM_TOKEN = 'X9M2PK';
 
+// Access ID mappings for host/speaker/moderator roles
+const ACCESS_CODES: Record<string, { role: 'Host' | 'Speaker' | 'Moderator'; color: string }> = {
+  'X9M2PK': { role: 'Host', color: 'emerald' },
+  'SPK001': { role: 'Speaker', color: 'blue' },
+  'MOD001': { role: 'Moderator', color: 'amber' },
+};
+
 // ============ JOIN ROOM MODAL ============
 
-function JoinRoomModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function JoinRoomModal({ open, onClose, onSwitchToLogin }: { open: boolean; onClose: () => void; onSwitchToLogin: () => void }) {
   const [joinName, setJoinName] = useState('');
   const [joinEmail, setJoinEmail] = useState('');
   const [membershipId, setMembershipId] = useState('');
@@ -79,10 +83,10 @@ function JoinRoomModal({ open, onClose }: { open: boolean; onClose: () => void }
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
-                  <Video className="w-4 h-4 text-white" />
+                  <Eye className="w-4 h-4 text-white" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Join the Event</h3>
+                  <h3 className="text-base font-bold text-white">Join as Viewer</h3>
                   <p className="text-[10px] text-zinc-500">Beyond Ortho-K: Myopia Management Session</p>
                 </div>
               </div>
@@ -189,8 +193,18 @@ function JoinRoomModal({ open, onClose }: { open: boolean; onClose: () => void }
               disabled={!joinName.trim() || !joinEmail.trim() || !agreedPrecautions}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-12"
             >
-              Join the Event <ArrowRight className="w-4 h-4 ml-2" />
+              Join as Viewer <ArrowRight className="w-4 h-4 ml-2" />
             </Button>
+
+            {/* Switch to Login */}
+            <div className="text-center pt-1">
+              <button
+                onClick={() => { onClose(); onSwitchToLogin(); }}
+                className="text-[11px] text-zinc-500 hover:text-emerald-400 transition-colors underline underline-offset-2"
+              >
+                Have an Access ID? Sign in here
+              </button>
+            </div>
           </div>
         </motion.div>
       </motion.div>
@@ -222,71 +236,47 @@ function PointsBadge({ icon, label, points }: { icon: React.ReactNode; label: st
   );
 }
 
-// ============ HOST ROOM MODAL ============
+// ============ LOGIN MODAL ============
 
-function HostRoomModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [hostName, setHostName] = useState('');
-  const [webinarTitle, setWebinarTitle] = useState('');
-  const [webinarDesc, setWebinarDesc] = useState('');
-  const [waitingRoom, setWaitingRoom] = useState(true);
-  const [hostError, setHostError] = useState('');
+function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [email, setEmail] = useState('');
+  const [accessId, setAccessId] = useState('');
+  const [loginError, setLoginError] = useState('');
 
-  // After creation
-  const [createdRoom, setCreatedRoom] = useState<{ roomId: string; token: string } | null>(null);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
+  // Detect role as user types access ID — derived, no effect needed
+  const detectedRole = useMemo(() => {
+    const code = accessId.toUpperCase().trim();
+    if (code.length >= 6 && ACCESS_CODES[code]) {
+      return ACCESS_CODES[code];
+    }
+    return null;
+  }, [accessId]);
 
-  const handleCreate = () => {
-    setHostError('');
-    if (!hostName.trim()) {
-      setHostError('Enter your name as host');
+  const handleSignIn = () => {
+    setLoginError('');
+    if (!email.trim() || !email.includes('@')) {
+      setLoginError('Enter a valid email address');
       return;
     }
-    if (!webinarTitle.trim()) {
-      setHostError('Enter a webinar title');
+    const code = accessId.toUpperCase().trim();
+    if (code.length !== 6) {
+      setLoginError('Access ID must be 6 characters');
       return;
     }
-    const roomId = generateRoomId();
-    const token = generateAccessToken();
-    setCreatedRoom({ roomId, token });
-  };
-
-  const getInviteLink = () => {
-    if (!createdRoom) return '';
-    return `${window.location.origin}/#${encodeURIComponent(`room=${createdRoom.roomId}&token=${createdRoom.token}`)}`;
-  };
-
-  const copyToClipboard = async (text: string, field: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedField(field);
-      setTimeout(() => setCopiedField(null), 2000);
-    } catch {
-      // Fallback
-      const el = document.createElement('textarea');
-      el.value = text;
-      document.body.appendChild(el);
-      el.select();
-      document.execCommand('copy');
-      document.body.removeChild(el);
-      setCopiedField(field);
-      setTimeout(() => setCopiedField(null), 2000);
+    const accessInfo = ACCESS_CODES[code];
+    if (!accessInfo) {
+      setLoginError('Invalid Access ID. Please check and try again.');
+      return;
     }
+    // Redirect to room with role flag
+    const roleParam = accessInfo.role.toLowerCase();
+    window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&email=${encodeURIComponent(email.trim())}&role=${roleParam}&accessId=${encodeURIComponent(code)}`;
   };
 
-  const handleStartWebinar = () => {
-    if (!createdRoom) return;
-    window.location.hash = `room=${createdRoom.roomId}&token=${createdRoom.token}&host=true&name=${encodeURIComponent(hostName.trim())}&title=${encodeURIComponent(webinarTitle.trim())}&waitingRoom=${waitingRoom}`;
-  };
-
-  // Reset on close
   const handleClose = () => {
-    setHostName('');
-    setWebinarTitle('');
-    setWebinarDesc('');
-    setWaitingRoom(true);
-    setHostError('');
-    setCreatedRoom(null);
-    setCopiedField(null);
+    setEmail('');
+    setAccessId('');
+    setLoginError('');
     onClose();
   };
 
@@ -316,11 +306,11 @@ function HostRoomModal({ open, onClose }: { open: boolean; onClose: () => void }
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center">
-                  <Presentation className="w-4 h-4 text-white" />
+                  <Lock className="w-4 h-4 text-white" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Host a Webinar</h3>
-                  <p className="text-[10px] text-zinc-500">Create and manage your own room</p>
+                  <h3 className="text-base font-bold text-white">Access Your Event</h3>
+                  <p className="text-[10px] text-zinc-500">Sign in for hosts, speakers & moderators</p>
                 </div>
               </div>
               <button onClick={handleClose} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
@@ -331,195 +321,113 @@ function HostRoomModal({ open, onClose }: { open: boolean; onClose: () => void }
 
           {/* Content */}
           <div className="p-5 space-y-4">
-            {!createdRoom ? (
-              <>
-                {/* Host Info */}
-                <div className="space-y-3">
-                  <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Host Details</p>
-                  <Input
-                    value={hostName}
-                    onChange={e => { setHostName(e.target.value); setHostError(''); }}
-                    placeholder="Your Name (Host)"
-                    className="bg-white/5 border-white/15 text-white placeholder:text-zinc-600 text-sm h-11"
-                  />
-                </div>
+            {/* Email Input */}
+            <div className="space-y-3">
+              <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Your Email</p>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600" />
+                <Input
+                  value={email}
+                  onChange={e => { setEmail(e.target.value); setLoginError(''); }}
+                  placeholder="your@email.com"
+                  type="email"
+                  className="bg-white/5 border-white/15 text-white placeholder:text-zinc-600 text-sm h-11 pl-10"
+                />
+              </div>
+            </div>
 
-                {/* Webinar Info */}
-                <div className="space-y-3">
-                  <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Webinar Details</p>
-                  <Input
-                    value={webinarTitle}
-                    onChange={e => { setWebinarTitle(e.target.value); setHostError(''); }}
-                    placeholder="Webinar Title"
-                    className="bg-white/5 border-white/15 text-white placeholder:text-zinc-600 text-sm h-11"
-                  />
-                  <textarea
-                    value={webinarDesc}
-                    onChange={e => setWebinarDesc(e.target.value)}
-                    placeholder="Description (optional)"
-                    rows={3}
-                    className="w-full bg-white/5 border border-white/15 rounded-md px-3 py-2 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-emerald-500 resize-none"
-                  />
-                </div>
+            {/* Access ID Input */}
+            <div className="space-y-3">
+              <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Access ID</p>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600" />
+                <Input
+                  value={accessId}
+                  onChange={e => { setAccessId(e.target.value.toUpperCase()); setLoginError(''); }}
+                  placeholder="e.g. X9M2PK"
+                  maxLength={6}
+                  className="bg-white/5 border-white/15 text-white placeholder:text-zinc-600 font-mono text-sm h-11 pl-10 tracking-widest"
+                />
+              </div>
+              <p className="text-[10px] text-zinc-600">Enter the 6-character code provided to you</p>
+            </div>
 
-                {/* Waiting Room Toggle */}
-                <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-white/10">
-                  <div className="flex items-center gap-2.5">
-                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    <div>
-                      <p className="text-xs font-semibold text-zinc-200">Waiting Room</p>
-                      <p className="text-[10px] text-zinc-500">Admit attendees before they join</p>
-                    </div>
+            {/* Role Indicator */}
+            <AnimatePresence mode="wait">
+              {detectedRole && (
+                <motion.div
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.2 }}
+                  className={`p-3 rounded-xl border flex items-center gap-3 ${
+                    detectedRole.color === 'emerald'
+                      ? 'bg-emerald-600/10 border-emerald-500/30'
+                      : detectedRole.color === 'blue'
+                        ? 'bg-blue-600/10 border-blue-500/30'
+                        : 'bg-amber-600/10 border-amber-500/30'
+                  }`}
+                >
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+                    detectedRole.color === 'emerald'
+                      ? 'bg-emerald-600/20'
+                      : detectedRole.color === 'blue'
+                        ? 'bg-blue-600/20'
+                        : 'bg-amber-600/20'
+                  }`}>
+                    {detectedRole.role === 'Host' && <Video className="w-4.5 h-4.5 text-emerald-400" />}
+                    {detectedRole.role === 'Speaker' && <Monitor className="w-4.5 h-4.5 text-blue-400" />}
+                    {detectedRole.role === 'Moderator' && <Shield className="w-4.5 h-4.5 text-amber-400" />}
                   </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={waitingRoom}
-                    onClick={() => setWaitingRoom(!waitingRoom)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-[#111111] ${
-                      waitingRoom ? 'bg-emerald-600' : 'bg-zinc-600'
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                        waitingRoom ? 'translate-x-6' : 'translate-x-1'
+                  <div>
+                    <p className="text-xs text-zinc-400">Access granted as</p>
+                    <Badge
+                      className={`mt-0.5 ${
+                        detectedRole.color === 'emerald'
+                          ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/30'
+                          : detectedRole.color === 'blue'
+                            ? 'bg-blue-600/20 text-blue-400 border-blue-500/30'
+                            : 'bg-amber-600/20 text-amber-400 border-amber-500/30'
                       }`}
-                    />
-                  </button>
+                    >
+                      {detectedRole.role}
+                    </Badge>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Info Banner */}
+            <div className="bg-emerald-600/5 border border-emerald-500/20 rounded-xl p-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <Lightbulb className="w-4 h-4 text-emerald-400" />
+                <p className="text-xs font-bold text-zinc-200">Access Levels</p>
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <Video className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-[11px] text-zinc-400"><span className="text-emerald-400 font-semibold">Host</span> — Full control, manage room & attendees</span>
                 </div>
-
-                {/* Info Banner */}
-                <div className="bg-emerald-600/5 border border-emerald-500/20 rounded-xl p-4 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <Lightbulb className="w-4 h-4 text-emerald-400" />
-                    <p className="text-xs font-bold text-zinc-200">How Hosting Works</p>
-                  </div>
-                  <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    As a host, you&apos;ll share your camera and microphone. Your Room ID and Token will be generated automatically. Share these details with your attendees so they can join.
-                  </p>
+                <div className="flex items-center gap-2">
+                  <Monitor className="w-3.5 h-3.5 text-blue-400" />
+                  <span className="text-[11px] text-zinc-400"><span className="text-blue-400 font-semibold">Speaker</span> — Present with camera & mic access</span>
                 </div>
-
-                {hostError && <p className="text-red-400 text-xs text-center">{hostError}</p>}
-
-                <Button
-                  onClick={handleCreate}
-                  disabled={!hostName.trim() || !webinarTitle.trim()}
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-12"
-                >
-                  Create Room <ArrowRight className="w-4 h-4 ml-2" />
-                </Button>
-              </>
-            ) : (
-              <>
-                {/* Success / Share Details */}
-                <div className="flex flex-col items-center gap-3 py-2">
-                  <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                    className="w-14 h-14 rounded-2xl bg-emerald-600/15 border border-emerald-500/30 flex items-center justify-center"
-                  >
-                    <Check className="w-7 h-7 text-emerald-400" />
-                  </motion.div>
-                  <div className="text-center">
-                    <p className="text-base font-bold text-white">Room Created!</p>
-                    <p className="text-[11px] text-zinc-500 mt-0.5">Share these details with your attendees</p>
-                  </div>
+                <div className="flex items-center gap-2">
+                  <Shield className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-[11px] text-zinc-400"><span className="text-amber-400 font-semibold">Moderator</span> — Manage chat, Q&A & attendees</span>
                 </div>
+              </div>
+            </div>
 
-                {/* Share Details Card */}
-                <div className="space-y-3">
-                  {/* Room ID */}
-                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-7 h-7 rounded-lg bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                          <Key className="w-3.5 h-3.5 text-emerald-400" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Room ID</p>
-                          <p className="text-sm font-bold text-white font-mono truncate">{createdRoom.roomId}</p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => copyToClipboard(createdRoom.roomId, 'roomId')}
-                        className="flex-shrink-0 p-2 rounded-lg hover:bg-white/10 transition-colors"
-                      >
-                        {copiedField === 'roomId'
-                          ? <Check className="w-4 h-4 text-emerald-400" />
-                          : <Copy className="w-4 h-4 text-zinc-400" />
-                        }
-                      </button>
-                    </div>
-                  </div>
+            {loginError && <p className="text-red-400 text-xs text-center">{loginError}</p>}
 
-                  {/* Access Token */}
-                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-7 h-7 rounded-lg bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                          <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Access Token</p>
-                          <p className="text-sm font-bold text-white font-mono truncate">{createdRoom.token}</p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => copyToClipboard(createdRoom.token, 'token')}
-                        className="flex-shrink-0 p-2 rounded-lg hover:bg-white/10 transition-colors"
-                      >
-                        {copiedField === 'token'
-                          ? <Check className="w-4 h-4 text-emerald-400" />
-                          : <Copy className="w-4 h-4 text-zinc-400" />
-                        }
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Invite Link */}
-                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-7 h-7 rounded-lg bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                          <Link2 className="w-3.5 h-3.5 text-emerald-400" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Direct Invite Link</p>
-                          <p className="text-[11px] text-emerald-300 truncate max-w-[200px] sm:max-w-[260px]">{getInviteLink()}</p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => copyToClipboard(getInviteLink(), 'link')}
-                        className="flex-shrink-0 p-2 rounded-lg hover:bg-white/10 transition-colors"
-                      >
-                        {copiedField === 'link'
-                          ? <Check className="w-4 h-4 text-emerald-400" />
-                          : <Copy className="w-4 h-4 text-zinc-400" />
-                        }
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Waiting room status */}
-                {waitingRoom && (
-                  <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-amber-500/5 border border-amber-500/15">
-                    <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
-                    <p className="text-[11px] text-zinc-400">
-                      Waiting Room is <span className="text-amber-400 font-bold">ON</span> — attendees will need your approval before joining.
-                    </p>
-                  </div>
-                )}
-
-                <Button
-                  onClick={handleStartWebinar}
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-12"
-                >
-                  Start Webinar <ExternalLink className="w-4 h-4 ml-2" />
-                </Button>
-              </>
-            )}
+            <Button
+              onClick={handleSignIn}
+              disabled={!email.trim() || accessId.trim().length !== 6}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-12"
+            >
+              Sign In <ArrowRight className="w-4 h-4 ml-2" />
+            </Button>
           </div>
         </motion.div>
       </motion.div>
@@ -529,11 +437,11 @@ function HostRoomModal({ open, onClose }: { open: boolean; onClose: () => void }
 
 // ============ MAIN LANDING PAGE ============
 
-export function LandingPage() {
+export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: boolean } = {}) {
   const { theme, toggleTheme } = useTheme();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [joinModalOpen, setJoinModalOpen] = useState(false);
-  const [hostModalOpen, setHostModalOpen] = useState(false);
+  const [loginModalOpen, setLoginModalOpen] = useState(showLoginOnMount);
   const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, mins: 0, secs: 0 });
 
   // Countdown timer
@@ -571,14 +479,13 @@ export function LandingPage() {
             <nav className="hidden md:flex items-center gap-6">
               <a href="#hero" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Home</a>
               <a href="#event" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Event</a>
-              <a href="#why" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Our Story</a>
+              <a href="#upcoming" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Upcoming</a>
               <a href="#leaderboard" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Leaderboard</a>
-              <a href="#benchmark" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">Benchmark</a>
               <Button onClick={() => setJoinModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold h-8 px-4">
                 Join Event
               </Button>
-              <Button onClick={() => setHostModalOpen(true)} variant="outline" className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 text-xs font-semibold h-8 px-4">
-                Host
+              <Button onClick={() => setLoginModalOpen(true)} variant="outline" className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 text-xs font-semibold h-8 px-4">
+                Sign In
               </Button>
               <button onClick={toggleTheme} className="p-2 rounded-lg hover:bg-white/10 transition-colors">
                 {theme === 'dark' ? <Sun className="w-4 h-4 text-zinc-400" /> : <Moon className="w-4 h-4 text-zinc-600" />}
@@ -589,8 +496,8 @@ export function LandingPage() {
               <Button onClick={() => setJoinModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-semibold h-7 px-3">
                 Join
               </Button>
-              <Button onClick={() => setHostModalOpen(true)} variant="outline" className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 text-[10px] font-semibold h-7 px-3">
-                Host
+              <Button onClick={() => setLoginModalOpen(true)} variant="outline" className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 text-[10px] font-semibold h-7 px-3">
+                Sign In
               </Button>
               <button onClick={toggleTheme} className="p-2 rounded-lg hover:bg-white/10 transition-colors">
                 {theme === 'dark' ? <Sun className="w-4 h-4 text-zinc-400" /> : <Moon className="w-4 h-4 text-zinc-600" />}
@@ -606,11 +513,10 @@ export function LandingPage() {
               <nav className="flex flex-col gap-1">
                 <a href="#hero" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Home</a>
                 <a href="#event" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Event</a>
-                <a href="#why" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Our Story</a>
+                <a href="#upcoming" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Upcoming</a>
                 <a href="#leaderboard" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Leaderboard</a>
-                <a href="#benchmark" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Benchmark</a>
-                <button onClick={() => { setMobileMenuOpen(false); setHostModalOpen(true); }} className="px-3 py-2.5 rounded-lg text-sm text-emerald-400 hover:bg-emerald-500/10 font-semibold text-left w-full">
-                  Host a Webinar
+                <button onClick={() => { setMobileMenuOpen(false); setLoginModalOpen(true); }} className="px-3 py-2.5 rounded-lg text-sm text-emerald-400 hover:bg-emerald-500/10 font-semibold text-left w-full">
+                  Sign In
                 </button>
               </nav>
             </div>
@@ -639,8 +545,7 @@ export function LandingPage() {
             </h1>
 
             <p className="text-sm sm:text-lg lg:text-xl text-zinc-400 max-w-2xl mx-auto mb-8 sm:mb-10 leading-relaxed px-2">
-              A virtual platform built exclusively for optometrists to learn, connect,
-              and grow together. Powered by Honeycomb architecture — no crashes, no limits.
+              A seamless virtual platform that adapts to every connection, ensuring no one misses a moment.
             </p>
 
             {/* Countdown */}
@@ -673,10 +578,10 @@ export function LandingPage() {
                 Join the Meet <ArrowRight className="w-5 h-5 ml-2" />
               </Button>
               <Button
-                onClick={() => setHostModalOpen(true)}
+                onClick={() => setLoginModalOpen(true)}
                 className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm sm:text-base h-12 sm:h-14 px-8 sm:px-10 shadow-lg shadow-emerald-600/25"
               >
-                Host a Webinar <Presentation className="w-5 h-5 ml-2" />
+                Host a Webinar <Lock className="w-5 h-5 ml-2" />
               </Button>
               <a href="#event">
                 <Button variant="outline" className="w-full sm:w-auto border-white/15 text-zinc-300 hover:bg-white/5 hover:text-white font-semibold h-12 sm:h-14 px-8 sm:px-10">
@@ -779,89 +684,51 @@ export function LandingPage() {
         </div>
       </section>
 
-      {/* ===== WHY WE MADE THIS / JOURNEY ===== */}
-      <section id="why" className="relative z-10 px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-20">
+      {/* ===== UPCOMING EVENTS ===== */}
+      <section id="upcoming" className="relative z-10 px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-20">
         <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-10 sm:mb-14">
+          <div className="text-center mb-8 sm:mb-12">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-600/15 border border-blue-500/30 mb-4">
-              <Heart className="w-3.5 h-3.5 text-blue-400" />
-              <span className="text-xs font-semibold text-blue-400">OUR STORY</span>
+              <Calendar className="w-3.5 h-3.5 text-blue-400" />
+              <span className="text-xs font-semibold text-blue-400">UPCOMING EVENTS</span>
             </div>
-            <h2 className="text-xl sm:text-3xl lg:text-4xl font-bold text-zinc-100 mb-3">Why We Made This</h2>
-            <p className="text-xs sm:text-sm text-zinc-500 max-w-2xl mx-auto">
-              Focus Meet was born from a real need — connecting optometrists worldwide without the limitations of traditional platforms.
+            <h2 className="text-xl sm:text-3xl lg:text-4xl font-bold text-zinc-100 mb-3">Upcoming Events</h2>
+            <p className="text-xs sm:text-sm text-zinc-500 max-w-lg mx-auto">
+              Register now to secure your spot. Each session offers FL Credits and certificates.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
-            {/* The Problem */}
-            <Card className="bg-white/[0.03] border-white/10">
-              <CardContent className="p-5 sm:p-7">
-                <div className="flex items-center gap-2.5 mb-4">
-                  <div className="w-9 h-9 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center">
-                    <AlertTriangle className="w-4.5 h-4.5 text-red-400" />
-                  </div>
-                  <h3 className="text-base sm:text-lg font-bold text-zinc-200">The Problem We Saw</h3>
-                </div>
-                <p className="text-xs sm:text-sm text-zinc-400 leading-relaxed mb-4">
-                  Optometrists across India and the world struggled to access quality continuing education. Existing platforms were expensive, unreliable at scale, and required massive server infrastructure that often crashed during peak attendance. Rural practitioners with poor internet were completely left out. The cost of hosting a session for 500+ eye care professionals was prohibitive for most organizations.
-                </p>
-                <ul className="space-y-2">
-                  {[
-                    'Expensive centralized servers crashing mid-session',
-                    'Poor connectivity users unable to participate',
-                    'No way to track attendance for certificates',
-                    'Data-heavy video streams on limited bandwidth',
-                    'Zero interactivity — just passive viewing',
-                  ].map((item, i) => (
-                    <li key={i} className="flex items-start gap-2 text-xs text-zinc-500">
-                      <X className="w-3.5 h-3.5 text-red-400/70 mt-0.5 flex-shrink-0" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+            {/* Event 1 — Beyond Ortho-K (current) */}
+            <EventCard
+              title="Beyond Ortho-K: Myopia Management with Contact Lenses"
+              speaker="Manish Bhagat"
+              speakerRole="Head — Visual Eyez India"
+              speakerInitials="MB"
+              date="May 6, 2026"
+              time="7:00 PM IST"
+              isLive
+            />
 
-            {/* Our Solution — Deliberately vague about architecture */}
-            <Card className="bg-white/[0.03] border-white/10">
-              <CardContent className="p-5 sm:p-7">
-                <div className="flex items-center gap-2.5 mb-4">
-                  <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
-                    <Lightbulb className="w-4.5 h-4.5 text-blue-400" />
-                  </div>
-                  <h3 className="text-base sm:text-lg font-bold text-zinc-200">How Focus Meet Solves It</h3>
-                </div>
-                <p className="text-xs sm:text-sm text-zinc-400 leading-relaxed mb-4">
-                  We engineered a unique Honeycomb architecture — a nature-inspired network where every participant strengthens the whole. Like bees in a hive, each connected device helps relay the stream to others, eliminating the need for expensive central servers entirely. The result is a platform that never crashes, scales effortlessly, and keeps the host&apos;s bandwidth flat regardless of how many people join. Our adaptive delivery system automatically adjusts to each viewer&apos;s connection quality — switching seamlessly between video, slides, and audio-only modes.
-                </p>
-                <ul className="space-y-2">
-                  {[
-                    'Honeycomb Architecture — no single point of failure',
-                    'Adaptive: Video → Slides → Audio based on network',
-                    'Attendance tracking for certificates & FL Credits',
-                    'Host bandwidth stays flat even with 1000+ viewers',
-                    'Interactive: chat, reactions, hand raise, Q&A',
-                  ].map((item, i) => (
-                    <li key={i} className="flex items-start gap-2 text-xs text-zinc-400">
-                      <Check className="w-3.5 h-3.5 text-blue-400 mt-0.5 flex-shrink-0" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          </div>
+            {/* Event 2 — Placeholder */}
+            <EventCard
+              title="Pediatric Vision Screening: Early Detection Strategies"
+              speaker="Dr. Priya Sharma"
+              speakerRole="Pediatric Optometrist, AIIMS"
+              speakerInitials="PS"
+              date="May 20, 2026"
+              time="6:30 PM IST"
+            />
 
-          {/* Journey Timeline */}
-          <div className="mt-10 sm:mt-14">
-            <h3 className="text-base sm:text-xl font-bold text-zinc-200 mb-6 text-center">The Journey Behind Focus Meet</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-              <JourneyCard step="01" title="The Need" desc="Optometrists needed reliable, affordable virtual education. Existing platforms failed at scale and cost too much." icon={<Users className="w-5 h-5" />} />
-              <JourneyCard step="02" title="The Honeycomb" desc="Inspired by nature's most efficient structure — every node strengthens the whole. Viewers relay to each other, eliminating central server dependency." icon={<Hexagon className="w-5 h-5" />} />
-              <JourneyCard step="03" title="The Innovation" desc="Adaptive delivery: video for good connections, slides+audio for poor ones. Nobody gets left behind due to bandwidth." icon={<Zap className="w-5 h-5" />} />
-              <JourneyCard step="04" title="Focus Meet" desc="Launched by Focuslinks.in — a platform for optometrists, by optometrists. Reliable, affordable, and inclusive." icon={<Flame className="w-5 h-5" />} />
-            </div>
+            {/* Event 3 — Placeholder */}
+            <EventCard
+              title="Digital Eye Strain: Managing Screen-Related Vision Issues"
+              speaker="Dr. Arjun Mehta"
+              speakerRole="Clinical Director, EyeCare Plus"
+              speakerInitials="AM"
+              date="June 3, 2026"
+              time="7:00 PM IST"
+            />
           </div>
         </div>
       </section>
@@ -955,13 +822,8 @@ export function LandingPage() {
         </div>
       </section>
 
-      {/* ===== BENCHMARK ===== */}
-      <section id="benchmark" className="relative z-10 px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-20">
-        <CapacityBenchmark />
-      </section>
-
       {/* ===== FOOTER ===== */}
-      <footer className="relative z-10 px-4 sm:px-6 lg:px-8 py-8 sm:py-10 bg-[#080808] border-t border-white/5">
+      <footer className="relative z-10 px-4 sm:px-6 lg:px-8 py-8 sm:py-10 bg-[#080808] border-t border-white/5 mt-auto">
         <div className="max-w-6xl mx-auto">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2.5">
@@ -979,9 +841,12 @@ export function LandingPage() {
             <div className="flex items-center gap-4 sm:gap-6">
               <a href="#hero" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Home</a>
               <a href="#event" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Event</a>
-              <a href="#why" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Our Story</a>
+              <a href="#upcoming" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Upcoming</a>
               <a href="#leaderboard" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Leaderboard</a>
-              <a href="#benchmark" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Benchmark</a>
+              <span className="text-[11px] text-zinc-600">|</span>
+              <a href="#" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Help</a>
+              <a href="#" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Privacy</a>
+              <a href="#" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Terms</a>
             </div>
             <p className="text-[10px] text-zinc-700">
               &copy; 2026 Focuslinks.in — All rights reserved
@@ -991,28 +856,89 @@ export function LandingPage() {
       </footer>
 
       {/* Join Room Modal */}
-      <JoinRoomModal open={joinModalOpen} onClose={() => setJoinModalOpen(false)} />
+      <JoinRoomModal open={joinModalOpen} onClose={() => setJoinModalOpen(false)} onSwitchToLogin={() => setLoginModalOpen(true)} />
 
-      {/* Host Room Modal */}
-      <HostRoomModal open={hostModalOpen} onClose={() => setHostModalOpen(false)} />
+      {/* Login Modal */}
+      <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
     </div>
   );
 }
 
 // ============ SUB-COMPONENTS ============
 
-function JourneyCard({ step, title, desc, icon }: { step: string; title: string; desc: string; icon: React.ReactNode }) {
+function EventCard({
+  title,
+  speaker,
+  speakerRole,
+  speakerInitials,
+  date,
+  time,
+  isLive,
+}: {
+  title: string;
+  speaker: string;
+  speakerRole: string;
+  speakerInitials: string;
+  date: string;
+  time: string;
+  isLive?: boolean;
+}) {
   return (
     <Card className="bg-white/[0.03] border-white/10 hover:border-blue-500/20 transition-all group">
       <CardContent className="p-4 sm:p-5">
-        <div className="flex items-center gap-2.5 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
-            {icon}
+        {/* Live badge */}
+        {isLive && (
+          <div className="flex items-center gap-1.5 mb-3">
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30">
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-[9px] font-bold text-emerald-400 uppercase">Next Up</span>
+            </div>
           </div>
-          <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Step {step}</span>
+        )}
+
+        <h4 className="text-sm sm:text-base font-bold text-zinc-200 mb-3 group-hover:text-blue-300 transition-colors leading-snug">
+          {title}
+        </h4>
+
+        {/* Speaker info */}
+        <div className="flex items-center gap-2.5 mb-3">
+          <div className="w-8 h-8 rounded-full bg-blue-600/20 border border-blue-500/30 flex items-center justify-center flex-shrink-0">
+            <span className="text-[10px] font-bold text-blue-400">{speakerInitials}</span>
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-zinc-300 truncate">{speaker}</p>
+            <p className="text-[9px] text-zinc-500 truncate">{speakerRole}</p>
+          </div>
         </div>
-        <h4 className="text-sm sm:text-base font-bold text-zinc-200 mb-1.5 group-hover:text-blue-300 transition-colors">{title}</h4>
-        <p className="text-[11px] sm:text-xs text-zinc-500 leading-relaxed">{desc}</p>
+
+        {/* Date & time */}
+        <div className="flex items-center gap-2 mb-4">
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white/5 border border-white/10">
+            <Calendar className="w-3 h-3 text-blue-400" />
+            <span className="text-[10px] font-medium text-zinc-400">{date}</span>
+          </div>
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white/5 border border-white/10">
+            <Clock className="w-3 h-3 text-blue-400" />
+            <span className="text-[10px] font-medium text-zinc-400">{time}</span>
+          </div>
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold h-8"
+          >
+            Join
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="flex-1 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 text-[11px] font-semibold h-8"
+          >
+            Sign In
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );
@@ -1025,199 +951,6 @@ function EngagementMetric({ icon, label, points, detail }: { icon: React.ReactNo
       <p className="text-[10px] sm:text-xs text-zinc-400 font-medium">{label}</p>
       <p className="text-xs sm:text-sm font-bold text-amber-400 mt-0.5">{points}</p>
       {detail && <p className="text-[9px] text-zinc-600 mt-0.5">{detail}</p>}
-    </div>
-  );
-}
-
-// ============ CAPACITY BENCHMARK ============
-
-function CapacityBenchmark() {
-  const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
-  const [benchmarkRunning, setBenchmarkRunning] = useState(false);
-  const [benchmarkProgress, setBenchmarkProgress] = useState<{ phase: string; progress: number } | null>(null);
-  const [targetUsers, setTargetUsers] = useState(1000);
-
-  const runBenchmark = async () => {
-    setBenchmarkRunning(true);
-    setBenchmarkResult(null);
-    setBenchmarkProgress({ phase: 'Starting...', progress: 0 });
-    try {
-      const engine = new BenchmarkEngine();
-      const result = await engine.runFullBenchmark(targetUsers, (phase, progress) => {
-        setBenchmarkProgress({ phase, progress });
-      });
-      setBenchmarkResult(result);
-    } catch (err) {
-      console.error('Benchmark failed:', err);
-    } finally {
-      setBenchmarkRunning(false);
-      setBenchmarkProgress(null);
-    }
-  };
-
-  return (
-    <div className="max-w-6xl mx-auto">
-      <div className="text-center mb-8 sm:mb-12">
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-600/15 border border-blue-500/30 mb-4">
-          <BarChart3 className="w-3.5 h-3.5 text-blue-400" />
-          <span className="text-xs font-semibold text-blue-400">PERFORMANCE ANALYSIS</span>
-        </div>
-        <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-zinc-100 mb-2">Built for Scale</h2>
-        <p className="text-xs sm:text-sm text-zinc-500 max-w-lg mx-auto">
-          Real-time stress testing of our Honeycomb architecture
-        </p>
-      </div>
-
-      {/* Infrastructure Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6">
-        <StatCard icon={<Users className="w-5 h-5" />} value="1,000+" label="Concurrent Users" />
-        <StatCard icon={<Zap className="w-5 h-5" />} value="~200ms" label="Recovery Time" />
-        <StatCard icon={<Monitor className="w-5 h-5" />} value="17.5 Mbps" label="Host Bandwidth" />
-        <StatCard icon={<Shield className="w-5 h-5" />} value="99.5%" label="Uptime" />
-      </div>
-
-      {/* Architecture Analysis Cards — vague about actual tree structure */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-6">
-        <AnalysisCard
-          icon={<Hexagon className="w-5 h-5" />}
-          title="Honeycomb Distribution"
-          desc="The host stream flows through a self-organizing honeycomb network. Each connected device can relay to a few neighbors, keeping the host's bandwidth flat regardless of total viewer count."
-          stats={[
-            { label: 'Relay Factor', value: '3-5x' },
-            { label: 'Max Hops', value: '6 levels' },
-            { label: 'Host Load', value: '17.5 Mbps' },
-          ]}
-        />
-        <AnalysisCard
-          icon={<Shield className="w-5 h-5" />}
-          title="Self-Healing Network"
-          desc="When a node disconnects, its neighbors automatically reconnect to the nearest available relay. Recovery happens in under 200ms with zero data loss — the honeycomb heals itself instantly."
-          stats={[
-            { label: 'Recovery Time', value: '<200ms' },
-            { label: 'Data Loss', value: '0%' },
-            { label: 'Backup Nodes', value: '5-10' },
-          ]}
-        />
-        <AnalysisCard
-          icon={<HeadphonesIcon className="w-5 h-5" />}
-          title="Adaptive Delivery"
-          desc="Automatically switches between HD video, slides+audio, and audio-only based on each viewer's real-time connection quality. Saves up to 80% data on poor connections."
-          stats={[
-            { label: 'Video Mode', value: '720p' },
-            { label: 'Slides Mode', value: '~80% less' },
-            { label: 'Audio Mode', value: '~95% less' },
-          ]}
-        />
-      </div>
-
-      {/* Interactive Stress Test */}
-      <div className="p-4 sm:p-6 rounded-2xl bg-white/[0.03] border border-white/10">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
-          <div>
-            <h3 className="text-sm sm:text-base font-semibold text-zinc-200 flex items-center gap-2">
-              <Play className="w-4 h-4 text-blue-400" /> Run Live Stress Test
-            </h3>
-            <p className="text-[11px] text-zinc-500 mt-0.5">Simulates real users joining, leaving, and recovering from failures</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 bg-white/5 rounded-lg px-3 py-1.5 border border-white/10">
-              <Users className="w-3.5 h-3.5 text-zinc-400" />
-              <input
-                type="number"
-                value={targetUsers}
-                onChange={e => setTargetUsers(Math.max(10, Math.min(2000, parseInt(e.target.value) || 700)))}
-                className="w-14 bg-transparent text-sm text-blue-400 font-bold text-center focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                disabled={benchmarkRunning}
-              />
-              <span className="text-[10px] text-zinc-500">users</span>
-            </div>
-            <Button
-              onClick={runBenchmark}
-              disabled={benchmarkRunning}
-              className={`${benchmarkRunning ? 'bg-zinc-700' : 'bg-blue-600 hover:bg-blue-700'} text-white font-semibold text-xs px-4 h-9`}
-            >
-              {benchmarkRunning ? 'Running...' : 'Run Test'}
-            </Button>
-          </div>
-        </div>
-
-        {/* Progress */}
-        {benchmarkRunning && benchmarkProgress && (
-          <div className="mb-4">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-zinc-400">{benchmarkProgress.phase}</span>
-              <span className="text-xs text-blue-400 font-mono">{Math.round(benchmarkProgress.progress * 100)}%</span>
-            </div>
-            <div className="w-full bg-white/5 rounded-full h-1.5 overflow-hidden">
-              <div className="bg-gradient-to-r from-blue-600 to-blue-400 h-1.5 rounded-full transition-all duration-300"
-                style={{ width: `${benchmarkProgress.progress * 100}%` }} />
-            </div>
-          </div>
-        )}
-
-        {/* Results */}
-        {benchmarkResult && (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-              <ResultStat label="Max Capacity" value={`${benchmarkResult.maxSupportedUsers}`} color="blue" />
-              <ResultStat label="Stability" value={`${benchmarkResult.streamStabilityScore}%`}
-                color={benchmarkResult.streamStabilityScore >= 80 ? 'blue' : 'amber'} />
-              <ResultStat label="Join Rate" value={`${(benchmarkResult.joinSuccessRate * 100).toFixed(1)}%`}
-                color={benchmarkResult.joinSuccessRate >= 0.95 ? 'blue' : 'amber'} />
-              <ResultStat label="Churn Resist" value={`${benchmarkResult.churnResistanceScore}%`}
-                color={benchmarkResult.churnResistanceScore >= 70 ? 'blue' : 'amber'} />
-            </div>
-            <div className="flex items-center gap-2 text-[10px] text-zinc-600 mt-2">
-              <Signal className="w-3 h-3" />
-              <span>Test simulated {targetUsers} users with random disconnects, reconnections, and bandwidth variations</span>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StatCard({ icon, value, label }: { icon: React.ReactNode; value: string; label: string }) {
-  return (
-    <div className="p-3 sm:p-4 rounded-xl border border-white/10 bg-white/[0.02] text-center">
-      <div className="flex justify-center mb-1.5 text-blue-400">{icon}</div>
-      <div className="text-xl sm:text-2xl font-black text-white">{value}</div>
-      <div className="text-[9px] sm:text-[10px] text-zinc-500 uppercase tracking-wider mt-0.5">{label}</div>
-    </div>
-  );
-}
-
-function AnalysisCard({ icon, title, desc, stats }: { icon: React.ReactNode; title: string; desc: string; stats: { label: string; value: string }[] }) {
-  return (
-    <Card className="bg-white/[0.03] border-white/10 hover:border-blue-500/20 transition-all">
-      <CardContent className="p-4 sm:p-5">
-        <div className="flex items-center gap-2.5 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
-            {icon}
-          </div>
-          <h4 className="text-sm font-bold text-zinc-200">{title}</h4>
-        </div>
-        <p className="text-[11px] sm:text-xs text-zinc-500 leading-relaxed mb-3">{desc}</p>
-        <div className="grid grid-cols-3 gap-2">
-          {stats.map(s => (
-            <div key={s.label} className="text-center p-1.5 rounded-lg bg-white/[0.03]">
-              <p className="text-xs sm:text-sm font-bold text-blue-400">{s.value}</p>
-              <p className="text-[8px] sm:text-[9px] text-zinc-600">{s.label}</p>
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function ResultStat({ label, value, color }: { label: string; value: string; color: 'blue' | 'amber' }) {
-  const cm = { blue: 'text-blue-400', amber: 'text-amber-400' };
-  return (
-    <div className="p-2.5 sm:p-3 rounded-lg bg-white/[0.03] border border-white/10 text-center">
-      <div className={`text-sm sm:text-base font-black ${cm[color]}`}>{value}</div>
-      <div className="text-[9px] sm:text-[10px] text-zinc-500 mt-0.5">{label}</div>
     </div>
   );
 }

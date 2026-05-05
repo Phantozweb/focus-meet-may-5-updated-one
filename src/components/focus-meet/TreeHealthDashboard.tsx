@@ -22,10 +22,10 @@ const TIER_COLORS: Record<ScalingTier, { bg: string; text: string; border: strin
 
 const TIER_LABELS: Record<ScalingTier, string> = {
   tier1: 'Direct',
-  tier2: 'Roots',
-  tier3: 'Roots+Branches',
-  tier4: 'Deep Tree',
-  tier5: 'Super-Tree',
+  tier2: 'Hubs',
+  tier3: 'Hubs+Relays',
+  tier4: 'Extended Network',
+  tier5: 'Full Scale',
 };
 
 const DELIVERY_MODE_COLORS: Record<ContentDeliveryMode, { bg: string; text: string; icon: string }> = {
@@ -139,7 +139,7 @@ export function TreeHealthDashboard() {
       {/* Header */}
       <div className="flex items-center gap-2 flex-wrap">
         <TreePine className="w-4 h-4 text-emerald-400" />
-        <span className="text-sm font-semibold text-zinc-200">Tree Architecture Health</span>
+        <span className="text-sm font-semibold text-zinc-200">Room Health</span>
         <Badge className={`text-[8px] border-0 ${churnScore > 70 ? 'bg-emerald-500/20 text-emerald-400' : churnScore > 40 ? 'bg-amber-500/20 text-amber-400' : 'bg-red-500/20 text-red-400'}`}>
           {churnScore > 70 ? 'STABLE' : churnScore > 40 ? 'DEGRADED' : 'UNSTABLE'}
         </Badge>
@@ -155,8 +155,8 @@ export function TreeHealthDashboard() {
       <div className="bg-zinc-900/60 rounded-lg p-3 border border-zinc-800">
         <div className="flex items-center gap-1.5 mb-2">
           <TrendingUp className="w-3 h-3 text-violet-400" />
-          <span className="text-zinc-400 font-medium">Tier Progress</span>
-          <span className="text-[9px] text-zinc-600 ml-1">— scaling roadmap</span>
+          <span className="text-zinc-400 font-medium">Network Scale</span>
+          <span className="text-[9px] text-zinc-600 ml-1">— current status</span>
         </div>
         <div className="flex gap-0.5 w-full">
           {allTiers.map((tier, idx) => {
@@ -208,8 +208,8 @@ export function TreeHealthDashboard() {
       {/* Capacity Overview */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
         <MetricCard icon={<Users className="w-3.5 h-3.5 text-blue-400" />} label="Viewers" value={viewerCount} subtext={`of ${roomInfo.peakParticipants} peak`} color="blue" />
-        <MetricCard icon={<Zap className="w-3.5 h-3.5 text-emerald-400" />} label="Roots" value={rootNodes.length} subtext={`Target: ${tierConfig.targetRoots}`} color="emerald" />
-        <MetricCard icon={<Shield className="w-3.5 h-3.5 text-cyan-400" />} label="Sub-Roots" value={subRootNodes.length} subtext={`Target: ${tierConfig.targetSubRoots}`} color="cyan" />
+        <MetricCard icon={<Zap className="w-3.5 h-3.5 text-emerald-400" />} label="Hubs" value={rootNodes.length} subtext={`Target: ${tierConfig.targetRoots}`} color="emerald" />
+        <MetricCard icon={<Shield className="w-3.5 h-3.5 text-cyan-400" />} label="Relay Points" value={subRootNodes.length} subtext={`Target: ${tierConfig.targetSubRoots}`} color="cyan" />
         <MetricCard icon={<Gauge className="w-3.5 h-3.5 text-violet-400" />} label="Utilization" value={`${utilizationPct}%`} subtext={`${totalRelayLoad}/${totalRelayCapacity} relay`} color={utilizationPct > 80 ? 'red' : utilizationPct > 50 ? 'amber' : 'emerald'} />
         <MetricCard icon={<Activity className="w-3.5 h-3.5 text-amber-400" />} label="Tier" value={TIER_LABELS[currentTier]} subtext={`Max ${tierConfig.maxViewers.toLocaleString()}`} color={currentTier === 'tier5' ? 'red' : currentTier === 'tier4' ? 'amber' : 'emerald'} />
       </div>
@@ -246,7 +246,7 @@ export function TreeHealthDashboard() {
         <div className="flex items-center justify-between mb-2">
           <span className="text-zinc-400 font-medium flex items-center gap-1.5">
             <Zap className="w-3 h-3 text-emerald-400" />
-            Root Nodes
+            Connection Hubs
           </span>
           <div className="flex items-center gap-1">
             {healthyRoots > 0 && <Badge className="text-[8px] bg-emerald-500/20 text-emerald-400 border-0 h-4 px-1">{healthyRoots} ✓</Badge>}
@@ -258,8 +258,8 @@ export function TreeHealthDashboard() {
         {rootNodes.length === 0 ? (
           <div className="text-center py-4 text-zinc-600">
             <Server className="w-6 h-6 mx-auto mb-1 opacity-40" />
-            <p>No root nodes yet</p>
-            <p className="text-[10px] mt-1">Roots are auto-selected from high-bandwidth viewers after 20s</p>
+            <p>No connection hubs yet</p>
+            <p className="text-[10px] mt-1">Hubs are auto-selected from high-bandwidth viewers after 20s</p>
           </div>
         ) : (
           <div className="space-y-1.5 max-h-40 overflow-y-auto custom-scrollbar">
@@ -290,7 +290,7 @@ export function TreeHealthDashboard() {
           </div>
           <div>
             <div className="text-lg font-bold text-zinc-200">{rootsNeededForCurrent}</div>
-            <div className="text-[9px] text-zinc-600">Roots Needed</div>
+            <div className="text-[9px] text-zinc-600">Hubs Needed</div>
           </div>
         </div>
         {/* Capacity bar — logarithmic scale to 10,000 */}
@@ -347,8 +347,8 @@ export function TreeHealthDashboard() {
           <NetworkMetric label="Max Depth" value={`${maxDepth}`} good={maxDepth <= 4} />
           <NetworkMetric label="Join Rate" value={`${joinRate}/min`} good={joinRate < 30} />
           <NetworkMetric label="Leave Rate" value={`${leaveRate}/min`} good={leaveRate < 10} />
-          <NetworkMetric label="Relay Nodes" value={`${relayNodes.length}`} good={relayNodes.length >= 5} />
-          <NetworkMetric label="Leaf Nodes" value={`${leafNodes.length}`} good />
+          <NetworkMetric label="Active Relays" value={`${relayNodes.length}`} good={relayNodes.length >= 5} />
+          <NetworkMetric label="Viewers" value={`${leafNodes.length}`} good />
         </div>
       </div>
 
@@ -535,10 +535,10 @@ export function TreeHealthDashboard() {
       {/* Architecture Summary */}
       <div className="bg-zinc-900/40 rounded-lg p-3 border border-zinc-800/50">
         <div className="text-[10px] text-zinc-600 space-y-0.5">
-          <p>🏗️ Tier {currentTier.replace('tier', '')}: {tierConfig.reason}</p>
-          <p>🌳 Tree: Host → {rootNodes.length} Roots → Branches → Leaves (depth ≤ {tierConfig.maxTreeDepth})</p>
-          <p>📡 Host quality: {tierConfig.hostQuality} | {rootNodes.length > 0 ? `Only uploads to ${rootNodes.length} roots` : 'Serves viewers directly'}</p>
-          <p>🛡️ {subRootNodes.length} sub-roots ready for instant failover</p>
+          <p>📊 Scale Level {currentTier.replace('tier', '')}: {tierConfig.reason}</p>
+          <p>📡 Network: Connected through {rootNodes.length} hubs, depth {tierConfig.maxTreeDepth}</p>
+          <p>📡 Host quality: {tierConfig.hostQuality} | {rootNodes.length > 0 ? `Distributing through ${rootNodes.length} connection hubs` : 'Serving viewers directly'}</p>
+          <p>🛡️ {subRootNodes.length} backup relays ready for instant failover</p>
           <p>📊 Capacity: {capacityForCurrentRoots.toLocaleString()} viewers | Target: {tierConfig.maxViewers.toLocaleString()}</p>
           <p>
             📡 Delivery: <span className={deliveryModeColor.text}>{deliveryMode}</span> |

@@ -186,17 +186,37 @@ export function ViewerExperience() {
   const prevModeRef = useRef<ViewerMode>('full');
   const modeTransitionTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Determine suggested mode from real store data ──
-  const suggestedMode = useMemo(() => {
-    const mode = streamQualityToMode(streamQuality);
+  // ── Auto-switch based on available content ──
+  const contentBasedMode = useMemo(() => {
+    const hasIncomingVideo = !!incomingStream;
+    const hasSlides = isPresenting && (slides.length > 0 || !hasRealSlides); // real or fallback slides
 
-    // If video is poor AND slides are available, suggest slides-audio
-    if (mode === 'audio-only' && hasRealSlides) {
-      return 'slides-audio';
+    if (hasIncomingVideo && hasSlides) return 'full'; // Video + slides
+    if (hasIncomingVideo) return 'full'; // Video only
+    if (hasSlides) return 'slides-audio'; // Slides + audio, no video
+    return 'audio-only'; // Audio only
+  }, [incomingStream, isPresenting, slides.length, hasRealSlides]);
+
+  // ── Determine suggested mode: content availability + bandwidth ──
+  const suggestedMode = useMemo(() => {
+    // First: determine mode based on what content is available
+    const contentMode = contentBasedMode;
+
+    // Then: if bandwidth is too low, downgrade further
+    const bandwidthMode = streamQualityToMode(streamQuality);
+
+    // If content says audio-only but bandwidth allows more, respect content (no video available)
+    if (contentMode === 'audio-only') return 'audio-only';
+    if (contentMode === 'slides-audio' && bandwidthMode === 'audio-only' && !hasRealSlides) return 'audio-only';
+
+    // If content says full but bandwidth says slides-audio, use slides-audio (save bandwidth)
+    if (contentMode === 'full' && bandwidthMode !== 'full') {
+      // Downgrade to slides-audio if slides available, else audio-only
+      return hasRealSlides || isPresenting ? 'slides-audio' : bandwidthMode;
     }
 
-    return mode;
-  }, [streamQuality, hasRealSlides]);
+    return contentMode;
+  }, [contentBasedMode, streamQuality, hasRealSlides, isPresenting]);
 
   // ── Auto-switch mode (unless manual override) ──
   useEffect(() => {
@@ -204,29 +224,43 @@ export function ViewerExperience() {
     startTransition(() => { setActiveMode(suggestedMode); });
   }, [suggestedMode, manualOverride]);
 
-  // ── Toast on mode change ──
+  // ── Toast on mode change (content-driven + bandwidth-driven) ──
   useEffect(() => {
+    if (manualOverride) return;
     if (prevModeRef.current !== activeMode) {
       const prev = prevModeRef.current;
       prevModeRef.current = activeMode;
 
-      const isUpgrade =
-        (activeMode === 'full' && prev !== 'full') ||
-        (activeMode === 'slides-audio' && prev === 'audio-only');
+      // Determine if this was a content change or bandwidth change
+      const isContentDriven = contentBasedMode !== prev;
 
-      if (isUpgrade) {
-        toast.success(`Upgraded to ${MODE_CONFIG[activeMode].label}`, {
-          description: MODE_CONFIG[activeMode].description,
-          duration: 3000,
-        });
-      } else if (activeMode !== prev) {
-        toast.info(`Switched to ${MODE_CONFIG[activeMode].label}`, {
-          description: 'Adapting to your connection',
-          duration: 3000,
-        });
+      if (isContentDriven) {
+        const labels: Record<ViewerMode, string> = {
+          'full': 'Video available — switching to full view',
+          'slides-audio': 'Slides shared — switching to slide view',
+          'audio-only': 'Presenter is audio-only',
+        };
+        toast.info(labels[activeMode], { duration: 3000 });
+      } else {
+        // Existing bandwidth-based toast logic
+        const isUpgrade =
+          (activeMode === 'full' && prev !== 'full') ||
+          (activeMode === 'slides-audio' && prev === 'audio-only');
+
+        if (isUpgrade) {
+          toast.success(`Upgraded to ${MODE_CONFIG[activeMode].label}`, {
+            description: MODE_CONFIG[activeMode].description,
+            duration: 3000,
+          });
+        } else if (activeMode !== prev) {
+          toast.info(`Switched to ${MODE_CONFIG[activeMode].label}`, {
+            description: 'Adapting to your connection',
+            duration: 3000,
+          });
+        }
       }
     }
-  }, [activeMode]);
+  }, [activeMode, contentBasedMode, manualOverride]);
 
   // ── Auto-suggest mode changes when not manually overridden ──
   useEffect(() => {

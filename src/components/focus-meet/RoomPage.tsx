@@ -11,7 +11,6 @@ import { Controls } from './Controls';
 import { ParticipantList } from './ParticipantList';
 import { FileSharingPanel } from './FileSharingPanel';
 import { TreeVisualizer } from './TreeVisualizer';
-import { BenchmarkPanel } from './BenchmarkPanel';
 import { SlidePresentation } from './SlidePresentation';
 import { PresenterView } from './PresenterView';
 import { ViewerExperience } from './ViewerExperience';
@@ -533,16 +532,6 @@ export function RoomPage() {
           </div>
         </div>
 
-        {/* Tree Health Status Bar */}
-        <div className="flex items-center gap-3 px-3 py-1.5 bg-emerald-950/30 border-b border-emerald-800/30 text-xs overflow-x-auto">
-          <span className="text-emerald-400 whitespace-nowrap">🌳 Roots: {roomInfo?.rootNodes?.length || 0}</span>
-          <span className="text-emerald-400 whitespace-nowrap">👥 Viewers: {nodes.size - 1}</span>
-          <span className="text-emerald-400 whitespace-nowrap">📐 Depth: {nodes.size > 0 ? Math.max(...Array.from(nodes.values()).map(n => n.depth)) : 0}</span>
-          <span className="text-emerald-400 whitespace-nowrap">📡 Upload: {engine?.getHostBandwidthInfo()?.uploadKbps || 0} kbps</span>
-          {engine?.getHostBandwidthInfo()?.isLowBandwidth && (
-            <span className="text-amber-400 whitespace-nowrap">⚡ Low BW</span>
-          )}
-        </div>
 
         {/* Screen share indicator */}
         {screenShare.isSharing && (
@@ -627,7 +616,6 @@ export function RoomPage() {
 
         {/* Overlays - host-only */}
         <TreeVisualizer />
-        <BenchmarkPanel />
 
         {/* Floating reactions */}
         <div className="absolute bottom-20 left-0 right-0 pointer-events-none z-20 overflow-hidden">
@@ -813,7 +801,6 @@ export function RoomPage() {
       />
 
       {/* Overlays */}
-      <BenchmarkPanel />
 
       {/* Floating reactions */}
       <div className="absolute bottom-20 left-0 right-0 pointer-events-none z-20 overflow-hidden">

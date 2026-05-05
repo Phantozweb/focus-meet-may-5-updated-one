@@ -508,3 +508,221 @@ Integrate the ContentChunkRelay into `/home/z/my-project/src/lib/peer-tree.ts` (
 6. **Chunk serialization for data channels**: We serialize `ArrayBuffer` data as a placeholder string `[binary:N]` because PeerJS data channels use JSON serialization. In production, binary data channels would send the ArrayBuffer directly. This placeholder approach allows the signal path to work while the actual binary delivery uses the WebRTC media connection.
 
 ---
+
+# Work Log — Task 2: Clean RoomPage.tsx, TreeHealthDashboard.tsx, and Controls.tsx — Remove Architecture-Exposing Terms and BenchmarkPanel
+
+## Agent: full-stack-developer
+## Date: 2024-03-04
+
+---
+
+## Task Summary
+Remove BenchmarkPanel and architecture-exposing terminology from the Focus Meet UI. Replace all internal architecture terms (Root Nodes, Sub-Roots, Tree Architecture, etc.) with user-friendly equivalents (Connection Hubs, Relay Points, Room Health, etc.).
+
+---
+
+## Completed Work
+
+### 1. Updated `/home/z/my-project/src/components/focus-meet/RoomPage.tsx`
+
+- **Removed BenchmarkPanel import**: Deleted `import { BenchmarkPanel } from './BenchmarkPanel';`
+- **Removed `<BenchmarkPanel />` from HOST layout** (was in the overlays section after TreeVisualizer)
+- **Removed `<BenchmarkPanel />` from VIEWER layout** (was in the overlays section)
+- **Removed the Tree Health Status Bar** (lines 536-545): The entire `<div>` showing `🌳 Roots: X | 👥 Viewers: Y | 📐 Depth: Z | 📡 Upload: W kbps | ⚡ Low BW` was removed — this exposed internal architecture details (roots, depth, upload bandwidth) to anyone who could see the host's screen
+
+### 2. Updated `/home/z/my-project/src/components/focus-meet/TreeHealthDashboard.tsx`
+
+- **TIER_LABELS** replaced:
+  - `'Roots'` → `'Hubs'`
+  - `'Roots+Branches'` → `'Hubs+Relays'`
+  - `'Deep Tree'` → `'Extended Network'`
+  - `'Super-Tree'` → `'Full Scale'`
+  - `'Direct'` kept as-is
+- **Header**: `"Tree Architecture Health"` → `"Room Health"`
+- **Tier Progress section**: `"Tier Progress"` → `"Network Scale"`, subtitle `"— scaling roadmap"` → `"— current status"`
+- **Capacity Overview cards**:
+  - `"Roots"` label → `"Hubs"`
+  - `"Sub-Roots"` label → `"Relay Points"`
+- **Connection Hubs section** (was Root Nodes):
+  - `"Root Nodes"` → `"Connection Hubs"`
+  - `"No root nodes yet"` → `"No connection hubs yet"`
+  - `"Roots are auto-selected..."` → `"Hubs are auto-selected..."`
+- **Capacity Planning**:
+  - `"Roots Needed"` → `"Hubs Needed"`
+- **Network Metrics**:
+  - `"Relay Nodes"` → `"Active Relays"`
+  - `"Leaf Nodes"` → `"Viewers"`
+- **Architecture Summary**:
+  - `"🏗️ Tier X:"` → `"📊 Scale Level X:"`
+  - `"🌳 Tree: Host → X Roots → Branches → Leaves (depth ≤ N)"` → `"📡 Network: Connected through X hubs, depth N"`
+  - `"Only uploads to X roots"` → `"Distributing through X connection hubs"`
+  - `"sub-roots ready for instant failover"` → `"backup relays ready for instant failover"`
+
+### 3. Updated `/home/z/my-project/src/components/focus-meet/Controls.tsx`
+
+- **More menu item**: `"Network View"` → `"Connection Map"` (in the host "More" menu that toggles `isTreeVisible`)
+
+### Lint Check
+- `bun run lint` — **PASSED** with zero errors
+
+### Dev Server
+- Running successfully on port 3000, no compilation errors
+
+---
+
+# Work Log — Task 3: Auto-Switch Content Type + Update Page Routing for Login
+
+## Agent: full-stack-developer
+## Date: 2024-03-04
+
+---
+
+## Task Summary
+Add content-based auto-switching to ViewerExperience (mode adapts to presenter content availability, not just bandwidth), and add #login hash routing to page.tsx with a new LoginModal on the LandingPage.
+
+---
+
+## Completed Work
+
+### 1. Updated ViewerExperience.tsx — Content-based auto-switch mode
+
+- Added contentBasedMode useMemo that determines best viewer mode based on presenter content (incomingStream, isPresenting, slides)
+- Replaced suggestedMode with two-tier logic: content availability first, bandwidth downgrade second
+- Replaced toast on mode change effect with content-aware version that distinguishes content-driven vs bandwidth-driven mode changes
+- Manual override still respected
+
+### 2. Updated page.tsx — Login routing
+
+- Added PageView type: landing | room | login
+- Added #login and login=true hash detection
+- Login view renders LandingPage with showLoginOnMount prop
+
+### 3. Updated LandingPage.tsx — LoginModal and showLoginOnMount
+
+- Added LoginModal component with email/password form
+- Updated LandingPage signature to accept optional showLoginOnMount prop
+- Added loginModalOpen state initialized from showLoginOnMount
+- Added Sign In buttons in desktop nav, mobile nav, and mobile menu
+- Added LoginModal rendering alongside existing modals
+
+### Lint Check
+- bun run lint — PASSED with zero errors
+
+### Dev Server
+- Running successfully on port 3000, no compilation errors
+
+---
+
+# Work Log — Task 1: Rewrite LandingPage.tsx
+
+## Agent: full-stack-developer
+## Date: 2024-03-05
+
+---
+
+## Task Summary
+Rewrite LandingPage.tsx to remove Honeycomb architecture references, remove benchmark/stress-test section, replace HostRoomModal with LoginModal, update Join modal, update navigation, add Upcoming Events section, and clean up footer.
+
+---
+
+## Completed Work
+
+### Updated `/home/z/my-project/src/components/focus-meet/LandingPage.tsx`
+
+#### 1. Removed Honeycomb Architecture Text
+- Changed hero subtitle from "Powered by Honeycomb architecture — no crashes, no limits." to "A seamless virtual platform that adapts to every connection, ensuring no one misses a moment."
+- Removed ENTIRE "Our Story" section (id="why") containing Honeycomb architecture explanations, JourneyCards, and nature-inspired network descriptions
+- Removed all Honeycomb references from CapacityBenchmark section (section also removed entirely)
+- Removed JourneyCard sub-component (no longer needed)
+
+#### 2. Removed Stress Test / Benchmark Section
+- Removed ENTIRE "CapacityBenchmark" section (id="benchmark") with stress test UI showing "228 maximum capacity"
+- Removed `CapacityBenchmark` function component and all related code
+- Removed `BenchmarkEngine` import (`@/lib/benchmark`) and `BenchmarkResult` import (`@/lib/types`)
+- Removed `StatCard`, `AnalysisCard`, `ResultStat` sub-components (only used by CapacityBenchmark)
+- Removed nav links to "Our Story" (#why) and "Benchmark" (#benchmark) in both desktop and mobile nav menus
+
+#### 3. Added LoginModal for Host/Speaker/Moderator Access
+- Replaced `HostRoomModal` with new `LoginModal` component
+- Header: "Access Your Event" with Lock icon
+- Email input field with mail icon
+- Access ID input field (6-character alphanumeric, uppercase, with tracking-widest font-mono styling)
+- Real-time role indicator using `useMemo` (not useEffect, to avoid lint error):
+  - Shows role badge (Host/Speaker/Moderator) with color-coded backgrounds when valid access ID is entered
+  - Host = emerald, Speaker = blue, Moderator = amber
+- Hardcoded access mappings:
+  - `X9M2PK` → Host role
+  - `SPK001` → Speaker role
+  - `MOD001` → Moderator role
+- "Sign In" button that validates email and access ID, then redirects with role parameter in URL hash
+- Error handling for invalid Access ID
+- Access Levels info banner explaining Host/Speaker/Moderator permissions
+- Removed `generateRoomId` and `generateAccessToken` imports (no longer needed)
+
+#### 4. Updated Join Modal
+- Added "Join as Viewer" label in header (replaces generic "Join the Event")
+- Changed header icon from Video to Eye to visually distinguish from LoginModal
+- Added "Join as Viewer" button text instead of "Join the Event"
+- Added "Have an Access ID? Sign in here" link at bottom that closes JoinModal and opens LoginModal
+- `JoinRoomModal` now accepts `onSwitchToLogin` prop for cross-modal navigation
+- Removed hardcoded event room ID/token from being visible to users
+
+#### 5. Updated Navigation
+- Removed "Our Story" (#why) and "Benchmark" (#benchmark) nav links from both desktop and mobile menus
+- Added "Upcoming" (#upcoming) nav link
+- Changed "Host" button to "Sign In" button in both desktop and mobile nav
+- Mobile menu: Changed "Host a Webinar" to "Sign In"
+- Both desktop and mobile "Sign In" buttons open `LoginModal` instead of `HostRoomModal`
+
+#### 6. Added "Upcoming Events" Section
+- New section with id="upcoming" placed after Event Details section
+- Title: "Upcoming Events" with Calendar icon badge
+- 3 event cards using new `EventCard` component:
+  1. "Beyond Ortho-K: Myopia Management with Contact Lenses" — May 6, 2026, Manish Bhagat (marked as "Next Up" with live badge)
+  2. "Pediatric Vision Screening: Early Detection Strategies" — May 20, 2026, Dr. Priya Sharma
+  3. "Digital Eye Strain: Managing Screen-Related Vision Issues" — June 3, 2026, Dr. Arjun Mehta
+- Each card shows: title, speaker info (avatar initials + name + role), date/time badges, and Join + Sign In buttons
+- Responsive grid: 1 col on mobile, 2 on md, 3 on lg
+
+#### 7. Cleaned Up Footer
+- Removed "Our Story" and "Benchmark" links
+- Added "Upcoming" link
+- Added separator and "Help", "Privacy", "Terms" links
+- Footer has `mt-auto` class to stick to bottom of viewport (root div has `min-h-screen flex flex-col`)
+
+#### 8. Updated Hero Section
+- "Host a Webinar" button now opens LoginModal instead of HostRoomModal
+- Button icon changed from Presentation to Lock
+- Hero subtitle changed to remove Honeycomb reference
+
+#### 9. Import Cleanup
+- Added: `Lock`, `Mail`, `Eye`, `useMemo`
+- Removed: `useRef`, `Copy`, `Maximize`, `Globe`, `Play`, `BarChart3`, `Timer`, `WifiOff`, `Heart`, `Target`, `Flame`, `Award`, `Presentation`, `HeadphonesIcon`, `Signal`, `Hexagon`, `MessageSquare`, `ThumbsUp`, `Link2`, `ExternalLink`, `Key`, `ShieldCheck`
+- Added: `Badge` from shadcn/ui
+- Removed: `BenchmarkEngine`, `BenchmarkResult`, `generateRoomId`, `generateAccessToken`
+- Kept only the lucide icons actually used in the final component
+
+### Lint Check
+- `bun run lint` — **PASSED** with zero errors
+- Fixed initial lint error: Changed `useEffect` + `setDetectedRole` to `useMemo` for derived role detection to avoid "setState in effect" rule
+
+### Dev Server
+- Running successfully on port 3000, no compilation errors
+
+---
+
+## Key Design Decisions
+
+1. **useMemo for role detection**: Instead of using useEffect to set detectedRole state when accessId changes, used useMemo to derive the value. This avoids the lint error about calling setState synchronously within an effect, and is more idiomatic React for derived state.
+
+2. **Cross-modal navigation**: JoinRoomModal accepts `onSwitchToLogin` callback to allow switching to LoginModal. The parent LandingPage manages both modal states and handles the transition by closing one and opening the other.
+
+3. **EventCard as a reusable component**: Extracted event card into its own component with props for title, speaker info, date, time, and live status. This makes it easy to add more events or fetch them from an API in the future.
+
+4. **Hardcoded access codes in constant**: ACCESS_CODES is defined at module level as a simple object lookup. This makes it easy to replace with an API call later while keeping the demo working.
+
+5. **Role-based color theming**: Each role (Host/Speaker/Moderator) has a consistent color (emerald/blue/amber) across the LoginModal's role indicator, access level info, and badge styling.
+
+6. **Footer sticky with mt-auto**: The footer uses `mt-auto` on a `min-h-screen flex flex-col` parent, ensuring it sticks to the bottom when content is short and gets pushed down naturally when content overflows.
+
+---
