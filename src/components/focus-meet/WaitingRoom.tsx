@@ -96,9 +96,12 @@ export function WaitingRoom() {
   return (
     <div className="flex flex-col">
       {/* Collapsible header — always visible */}
-      <button
-        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-zinc-800/50 transition-colors"
+      <div
+        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-zinc-800/50 transition-colors cursor-pointer"
         onClick={() => setIsExpanded(!isExpanded)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setIsExpanded(!isExpanded); }}
       >
         <div className="flex items-center gap-2">
           {isExpanded ? (
@@ -126,7 +129,7 @@ export function WaitingRoom() {
             Admit All
           </Button>
         )}
-      </button>
+      </div>
 
       {/* Expandable body */}
       <AnimatePresence>

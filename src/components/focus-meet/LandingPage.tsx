@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Video, Users, Zap, Shield, ArrowRight,
   Check, Monitor, MessageCircle, Smile,
@@ -32,12 +32,13 @@ const ACCESS_CODES: Record<string, { role: 'Host' | 'Speaker' | 'Moderator'; col
 
 // ============ JOIN ROOM MODAL ============
 
-function JoinRoomModal({ open, onClose, onSwitchToLogin, devMode }: { open: boolean; onClose: () => void; onSwitchToLogin: () => void; devMode?: boolean }) {
+function JoinRoomModal({ open, onClose, onSwitchToLogin, devMode, autoJoin }: { open: boolean; onClose: () => void; onSwitchToLogin: () => void; devMode?: boolean; autoJoin?: boolean }) {
   const [joinName, setJoinName] = useState(devMode ? 'Dev Tester' : '');
   const [joinEmail, setJoinEmail] = useState(devMode ? 'dev@test.focuslinks.in' : '');
   const [membershipId, setMembershipId] = useState(devMode ? 'DEV001' : '');
   const [joinError, setJoinError] = useState('');
   const [agreedPrecautions, setAgreedPrecautions] = useState(!!devMode);
+  const autoJoinRef = useRef(false);
 
   const handleJoin = () => {
     setJoinError('');
@@ -56,6 +57,17 @@ function JoinRoomModal({ open, onClose, onSwitchToLogin, devMode }: { open: bool
     // Use hardcoded event room credentials — user never sees them
     window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&name=${encodeURIComponent(joinName.trim())}&email=${encodeURIComponent(joinEmail.trim())}&mid=${encodeURIComponent(membershipId.trim())}`;
   };
+
+  // Auto-join for dev mode
+  useEffect(() => {
+    if (autoJoin && open && joinName && joinEmail && agreedPrecautions && !autoJoinRef.current) {
+      autoJoinRef.current = true;
+      const timer = setTimeout(() => {
+        handleJoin();
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [autoJoin, open, joinName, joinEmail, agreedPrecautions]);
 
   if (!open) return null;
 
@@ -238,12 +250,13 @@ function PointsBadge({ icon, label, points }: { icon: React.ReactNode; label: st
 
 // ============ LOGIN MODAL ============
 
-function LoginModal({ open, onClose, prefilledEmail, prefilledAccessId }: { open: boolean; onClose: () => void; prefilledEmail?: string; prefilledAccessId?: string }) {
+function LoginModal({ open, onClose, prefilledEmail, prefilledAccessId, autoSignIn }: { open: boolean; onClose: () => void; prefilledEmail?: string; prefilledAccessId?: string; autoSignIn?: boolean }) {
   const [email, setEmail] = useState('');
   const [accessId, setAccessId] = useState('');
   const [loginError, setLoginError] = useState('');
   const [prevPrefillEmail, setPrevPrefillEmail] = useState('');
   const [prevPrefillAccessId, setPrevPrefillAccessId] = useState('');
+  const autoSignInRef = useRef(false);
 
   // Sync pre-filled values when they change (dev mode role switching)
   // Using state comparison instead of useEffect to avoid lint violation
@@ -287,10 +300,23 @@ function LoginModal({ open, onClose, prefilledEmail, prefilledAccessId }: { open
     window.location.hash = `room=${EVENT_ROOM_ID}&token=${EVENT_ROOM_TOKEN}&host=${isHostRole}&name=${encodeURIComponent(nameFromEmail)}&email=${encodeURIComponent(email.trim())}&role=${accessInfo.role.toLowerCase()}&accessId=${encodeURIComponent(code)}`;
   };
 
+  // Auto-sign-in for dev mode: once both fields are populated, submit automatically
+  useEffect(() => {
+    if (autoSignIn && open && email && accessId && accessId.length === 6 && !autoSignInRef.current) {
+      autoSignInRef.current = true;
+      // Small delay to let React finish rendering the pre-filled state
+      const timer = setTimeout(() => {
+        handleSignIn();
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [autoSignIn, open, email, accessId]);
+
   const handleClose = () => {
     setEmail('');
     setAccessId('');
     setLoginError('');
+    autoSignInRef.current = false;
     onClose();
   };
 
@@ -462,6 +488,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
   const [devPanelOpen, setDevPanelOpen] = useState(false);
   const [devPrefilledEmail, setDevPrefilledEmail] = useState('');
   const [devPrefilledAccessId, setDevPrefilledAccessId] = useState('');
+  const [devAutoJoin, setDevAutoJoin] = useState(false);
 
   // Detect dev mode and #join hash from URL
   useEffect(() => {
@@ -499,6 +526,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
     setLoginModalOpen(true);
   };
   const devEnterAsViewer = () => {
+    setDevAutoJoin(true);
     setJoinModalOpen(true);
   };
 
@@ -950,10 +978,10 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
       </footer>
 
       {/* Join Room Modal */}
-      <JoinRoomModal key={joinModalOpen ? 'open' : 'closed'} open={joinModalOpen} onClose={() => setJoinModalOpen(false)} onSwitchToLogin={() => setLoginModalOpen(true)} devMode={devMode} />
+      <JoinRoomModal key={joinModalOpen ? 'open' : 'closed'} open={joinModalOpen} onClose={() => { setJoinModalOpen(false); setDevAutoJoin(false); }} onSwitchToLogin={() => setLoginModalOpen(true)} devMode={devMode} autoJoin={devAutoJoin} />
 
       {/* Login Modal */}
-      <LoginModal open={loginModalOpen} onClose={() => { setLoginModalOpen(false); setDevPrefilledEmail(''); setDevPrefilledAccessId(''); }} prefilledEmail={devPrefilledEmail} prefilledAccessId={devPrefilledAccessId} />
+      <LoginModal open={loginModalOpen} onClose={() => { setLoginModalOpen(false); setDevPrefilledEmail(''); setDevPrefilledAccessId(''); }} prefilledEmail={devPrefilledEmail} prefilledAccessId={devPrefilledAccessId} autoSignIn={!!(devPrefilledEmail && devPrefilledAccessId)} />
 
       {/* Dev Mode Floating Re-open Button */}
       {devMode && !devPanelOpen && (

@@ -807,3 +807,41 @@ Stage Summary:
 - Developer mode now uses proper sign-in flow through LoginModal
 - PeerJS uses public cloud servers (0.peerjs.com primary, 1.peerjs.com fallback) for maximum compatibility
 - Lint passes, app compiles successfully
+
+---
+Task ID: 8
+Agent: main
+Task: Fix button-in-button hydration error, add auto-sign-in for dev mode, fix PeerJS host-viewer connection flow
+
+Work Log:
+- Fixed HTML validation error: `<button>` cannot be descendant of `<button>` in WaitingRoom.tsx
+  - Changed outer `<button>` to `<div>` with `role="button"`, `tabIndex={0}`, `onKeyDown` for accessibility
+  - Inner `<Button>` (Admit All) now properly nested inside a div, not a button
+- Added auto-sign-in for developer mode LoginModal
+  - Added `autoSignIn` prop to LoginModal
+  - When autoSignIn=true and both email+accessId are populated, automatically calls handleSignIn() after 300ms delay
+  - Added autoSignInRef to prevent duplicate submissions
+  - Reset autoSignInRef on modal close
+- Added auto-join for developer mode JoinRoomModal
+  - Added `autoJoin` prop to JoinRoomModal
+  - When autoJoin=true and name+email+precautions agreed, automatically calls handleJoin() after 300ms delay
+  - Added devAutoJoin state in LandingPage, reset on modal close
+- Fixed PeerJS host-viewer connection flow (hostPeerId mismatch)
+  - Updated createRoom() to try predictable ID first (fm-{roomId}-host), then add suffix if unavailable
+  - Added more retries (5 instead of 3) before falling back to alternate PeerJS server
+  - Updated joinRoom() to accept optional hostPeerId parameter
+  - Updated initViewer() to use explicit hostPeerId from URL if provided, fallback to computed ID
+  - Updated RoomPage.tsx to:
+    - Read hostPeer param from URL hash
+    - After host creates room, update URL with actual hostPeerId via replaceState
+    - Pass hostPeerId to joinRoom() when viewer connects
+- Updated all PeerJS log messages to show actual server name (0.peerjs.com/1.peerjs.com)
+- Fixed viewer fallback server to not add -fb suffix (was creating bad peer IDs)
+- Added console.log for viewer connecting to specific host peer ID for debugging
+
+Stage Summary:
+- Hydration error FIXED: No more button-in-button nesting in WaitingRoom.tsx
+- Dev mode auto-sign-in: Clicking Host/Speaker/Moderator dev button now auto-submits the login form
+- Dev mode auto-join: Clicking Viewer dev button now auto-submits the join form
+- PeerJS connection flow improved: hostPeerId passed through URL for reliable viewer-to-host connection
+- Lint passes, dev server compiles successfully

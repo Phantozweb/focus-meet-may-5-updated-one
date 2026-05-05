@@ -158,6 +158,7 @@ export function RoomPage() {
       const host = params.get('host') === 'true';
       const name = params.get('name') || 'Anonymous';
       const waitingRoomParam = params.get('waitingRoom') !== 'false'; // default true
+      const hostPeerIdParam = params.get('hostPeer'); // actual host peer ID from URL
       setDisplayName(name);
 
       if (!roomIdParam) {
@@ -310,6 +311,17 @@ export function RoomPage() {
           setConnectionStep('Connecting to signaling server...');
           const info = await eng.createRoom(name, `Focus Meet - ${normalizedId}`, normalizedId);
           setRoomInfo(info); setIsHost(true);
+
+          // Update URL hash with the actual host peer ID so viewers can connect
+          // This is critical because the host peer ID now includes a session token
+          const actualHostPeerId = info.hostPeerId;
+          if (actualHostPeerId) {
+            const currentHash = window.location.hash.substring(1);
+            const currentParams = new URLSearchParams(currentHash);
+            currentParams.set('hostPeer', actualHostPeerId);
+            window.history.replaceState(null, '', '#' + currentParams.toString());
+          }
+
           setConnectionStep('Starting camera & microphone...');
           // Sync waiting room setting from URL param to engine
           eng.setWaitingRoomEnabled(waitingRoomParam);
@@ -321,7 +333,7 @@ export function RoomPage() {
         } else {
           // VIEWER FLOW: join room → waiting room (if needed) → viewer experience
           setConnectionStep('Connecting to signaling server...');
-          const info = await eng.joinRoom(normalizedId, name);
+          const info = await eng.joinRoom(normalizedId, name, hostPeerIdParam || undefined);
           setRoomInfo(info); setIsHost(false);
 
           // Check if we're in the waiting room (engine sets this from isWaiting flag in room-info)

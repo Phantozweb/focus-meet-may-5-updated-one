@@ -304,26 +304,26 @@ export class FractalMeshEngine {
   async createRoom(hostName: string, title: string, existingRoomId?: string): Promise<RoomInfo> {
     await this.ensurePeerJS();
     const roomId = existingRoomId || this.generateRoomId();
-    const peerId = `fm-${roomId}-host`;
 
     return new Promise((resolve, reject) => {
       let attempts = 0;
-      let usingPrimary = true;
-      const tryConnect = (isPrimary: boolean, suffix = '') => {
+      const tryConnect = (isPrimary: boolean, peerIdSuffix = '') => {
         attempts++;
-        usingPrimary = isPrimary;
         const config = isPrimary ? this.getPeerConfig() : this.getPeerConfigFallback();
-        const pid = peerId + suffix;
+        // Try predictable ID first (fm-{roomId}-host), then add suffix if unavailable
+        const pid = `fm-${roomId}-host` + peerIdSuffix;
         const p = new this.PeerJS(pid, config);
 
         const timeout = setTimeout(() => {
           try { p.destroy(); } catch {}
-          if (attempts < 3) {
-            // Retry with new suffix to avoid ID collision
-            setTimeout(() => tryConnect(isPrimary, `-${Date.now()}`), 1000);
+          if (attempts < 5) {
+            // Retry — maybe stale registration expired
+            const nextSuffix = attempts > 2 ? `-${Date.now()}` : '';
+            setTimeout(() => tryConnect(isPrimary, nextSuffix), 1500);
           } else if (isPrimary) {
-            // Fall back to public PeerJS cloud server
-            setTimeout(() => tryConnect(false, '-fb'), 500);
+            // Fall back to alternate PeerJS cloud server
+            attempts = 0;
+            setTimeout(() => tryConnect(false, ''), 500);
           } else {
             reject(new Error('Could not connect to signaling server. Please check your internet connection and try again.'));
           }
@@ -331,7 +331,7 @@ export class FractalMeshEngine {
 
         p.on('open', (id: string) => {
           clearTimeout(timeout);
-          console.log(`[FractalMesh] Host peer opened: ${id} (server: ${isPrimary ? 'local' : 'cloud'})`);
+          console.log(`[FractalMesh] Host peer opened: ${id} (server: ${isPrimary ? '0.peerjs.com' : '1.peerjs.com'})`);
           resolve(this.initHost(id, hostName, title, roomId));
         });
 
@@ -339,14 +339,15 @@ export class FractalMeshEngine {
           clearTimeout(timeout);
           console.warn(`[FractalMesh] Host peer error: ${err.type}`, err);
           if (err.type === 'unavailable-id') {
-            // ID already taken — try with timestamp suffix
+            // ID already taken — try with timestamp suffix to get a fresh ID
             setTimeout(() => tryConnect(isPrimary, `-${Date.now()}`), 500);
-          } else if (attempts < 3) {
-            // Retry before falling back
-            setTimeout(() => tryConnect(isPrimary, `-${Date.now()}`), 1000);
+          } else if (attempts < 5) {
+            // Retry
+            setTimeout(() => tryConnect(isPrimary, peerIdSuffix), 1500);
           } else if (isPrimary) {
-            // Fall back to public PeerJS cloud server
-            setTimeout(() => tryConnect(false, '-fb'), 500);
+            // Fall back to alternate PeerJS cloud server
+            attempts = 0;
+            setTimeout(() => tryConnect(false, ''), 500);
           } else {
             reject(new Error(`Failed to create room: ${err.type || 'unknown error'}. Please try again.`));
           }
@@ -455,7 +456,7 @@ export class FractalMeshEngine {
 
   // ============ VIEWER: JOIN ROOM ============
 
-  async joinRoom(roomId: string, displayName: string): Promise<RoomInfo> {
+  async joinRoom(roomId: string, displayName: string, hostPeerId?: string): Promise<RoomInfo> {
     await this.ensurePeerJS();
     const peerId = `fm-${roomId}-${this.generatePeerSuffix()}`;
 
@@ -473,8 +474,8 @@ export class FractalMeshEngine {
             // Retry with slight delay and new suffix
             setTimeout(() => tryConnect(isPrimary, `-${Date.now()}`), 1000);
           } else if (isPrimary) {
-            // Fall back to public PeerJS cloud server
-            setTimeout(() => tryConnect(false, '-fb'), 500);
+            // Fall back to alternate PeerJS cloud server
+            setTimeout(() => tryConnect(false, ''), 500);
           } else {
             reject(new Error('Could not connect to signaling server. Please check your internet connection and try again.'));
           }
@@ -482,8 +483,8 @@ export class FractalMeshEngine {
 
         p.on('open', (id: string) => {
           clearTimeout(timeout);
-          console.log(`[FractalMesh] Viewer peer opened: ${id} (server: ${isPrimary ? 'local' : 'cloud'})`);
-          this.initViewer(id, displayName, roomId, resolve, reject);
+          console.log(`[FractalMesh] Viewer peer opened: ${id} (server: ${isPrimary ? '0.peerjs.com' : '1.peerjs.com'})`);
+          this.initViewer(id, displayName, roomId, hostPeerId, resolve, reject);
         });
 
         p.on('error', (err: any) => {
@@ -496,8 +497,8 @@ export class FractalMeshEngine {
           } else if (attempts < 3) {
             setTimeout(() => tryConnect(isPrimary, `-${Date.now()}`), 1000);
           } else if (isPrimary) {
-            // Fall back to public PeerJS cloud server
-            setTimeout(() => tryConnect(false, '-fb'), 500);
+            // Fall back to alternate PeerJS cloud server
+            setTimeout(() => tryConnect(false, ''), 500);
           } else {
             reject(new Error(`Connection error: ${err.type || 'unknown'}. Please try again.`));
           }
@@ -512,15 +513,18 @@ export class FractalMeshEngine {
 
   private initViewer(
     peerId: string, displayName: string, roomId: string,
+    hostPeerId: string | undefined,
     resolve: (v: RoomInfo) => void, reject: (e: any) => void
   ) {
     this.myNode = this.createNode(peerId, displayName, 'viewer', 'leaf', null, -1, '');
     this.myNode.maxRelayCapacity = getMaxChildrenForDevice(this.myDevice);
     this.nodes.set(peerId, this.myNode);
 
-    const hostPeerId = `fm-${roomId}-host`;
+    // Use explicit host peer ID if provided (from URL), otherwise fall back to standard format
+    const targetHostPeerId = hostPeerId || `fm-${roomId}-host`;
+    console.log(`[FractalMesh] Viewer connecting to host peer: ${targetHostPeerId}`);
     try {
-      const hostConn = this.peer!.connect(hostPeerId, { reliable: true, serialization: 'json' });
+      const hostConn = this.peer!.connect(targetHostPeerId, { reliable: true, serialization: 'json' });
 
       const timeout = setTimeout(() => {
         if (!hostConn.open) {
