@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
 import { useRoomStore } from '@/store/room-store';
 import { WaitingAttendee } from '@/lib/types';
+import { getSharedAudioContext } from '@/lib/audio-context';
 import {
   UserCheck, UserX, Users, Clock, Monitor, Smartphone,
   Tablet, Volume2, VolumeX, CheckCircle2, ChevronDown, ChevronRight,
@@ -23,6 +24,7 @@ export function WaitingRoom() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
   const prevCountRef = useRef(0);
+  const prevNotifCountRef = useRef(0);
 
   // Auto-expand when someone enters the waiting room
   useEffect(() => {
@@ -36,23 +38,26 @@ export function WaitingRoom() {
 
   // Play notification sound when a new person joins waiting room
   useEffect(() => {
-    if (soundEnabled && waitingRoom.length > prevCountRef.current && prevCountRef.current > 0) {
+    if (soundEnabled && waitingRoom.length > prevNotifCountRef.current && prevNotifCountRef.current > 0) {
       try {
-        const ctx = new AudioContext();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = 880;
-        osc.type = 'sine';
-        gain.gain.value = 0.1;
-        osc.start();
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-        osc.stop(ctx.currentTime + 0.3);
+        const ctx = getSharedAudioContext();
+        if (ctx) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.value = 880;
+          osc.type = 'sine';
+          gain.gain.value = 0.1;
+          osc.start();
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+          osc.stop(ctx.currentTime + 0.3);
+        }
       } catch {
         // Audio not available
       }
     }
+    prevNotifCountRef.current = waitingRoom.length;
   }, [waitingRoom.length, soundEnabled]);
 
   // Auto-admit: when enabled, automatically admit new attendees

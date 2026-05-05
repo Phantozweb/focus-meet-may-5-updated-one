@@ -99,6 +99,8 @@ export function detectGPUCapabilities(): GPUCapabilities {
   try { webTransport = typeof WebTransport !== 'undefined'; } catch {}
 
   // Determine best video processing mode
+  // NOTE: We only report 'webgpu' if the API is present. Actual WebGPU init
+  // may still fail at runtime — createVideoProcessor() handles that gracefully.
   const videoProcessingMode: GPUCapabilities['videoProcessingMode'] = webgpu ? 'webgpu' : webgl2 ? 'webgl2' : webgl1 ? 'webgl1' : 'canvas2d';
 
   // Determine best codec mode
@@ -109,6 +111,284 @@ export function detectGPUCapabilities(): GPUCapabilities {
     offscreenCanvas, webCodecs, sharedArrayBuffer, webTransport,
     videoProcessingMode, codecMode, maxTextureSize, gpuRenderer,
   };
+}
+
+// ============ WEBGPU VIDEO PROCESSOR ============
+// Uses WebGPU compute pipelines for GPU-accelerated video frame processing
+// Implements real video enhancement (brightness, contrast, saturation) and noise reduction
+
+class WebGPUVideoProcessor implements VideoFrameProcessor {
+  private device: GPUDevice | null = null;
+  private context: GPUCanvasContext | null = null;
+  private pipeline: GPURenderPipeline | null = null;
+  private sampler: GPUSampler | null = null;
+  private texture: GPUTexture | null = null;
+  private bindGroup: GPUBindGroup | null = null;
+  private format: GPUTextureFormat = 'rgba8unorm';
+  private initialized = false;
+  private initPromise: Promise<boolean>;
+
+  constructor() {
+    this.initPromise = this.init();
+  }
+
+  private async init(): Promise<boolean> {
+    try {
+      if (!navigator.gpu) return false;
+
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+      if (!adapter) return false;
+
+      this.device = await adapter.requestDevice();
+      if (!this.device) return false;
+
+      // Get preferred canvas format
+      this.format = navigator.gpu.getPreferredCanvasFormat();
+
+      // WGSL shader for video enhancement: brightness, contrast, saturation + noise reduction
+      const shaderCode = `
+        struct VertexOutput {
+          @builtin(position) position: vec4f,
+          @location(0) uv: vec2f,
+        };
+
+        @vertex
+        fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+          // Full-screen triangle strip (2 triangles covering the screen)
+          var pos = array<vec2f, 6>(
+            vec2f(-1.0, -1.0),
+            vec2f( 1.0, -1.0),
+            vec2f(-1.0,  1.0),
+            vec2f(-1.0,  1.0),
+            vec2f( 1.0, -1.0),
+            vec2f( 1.0,  1.0),
+          );
+          var uv = array<vec2f, 6>(
+            vec2f(0.0, 1.0),
+            vec2f(1.0, 1.0),
+            vec2f(0.0, 0.0),
+            vec2f(0.0, 0.0),
+            vec2f(1.0, 1.0),
+            vec2f(1.0, 0.0),
+          );
+
+          var output: VertexOutput;
+          output.position = vec4f(pos[vertexIndex], 0.0, 1.0);
+          output.uv = uv[vertexIndex];
+          return output;
+        }
+
+        @group(0) @binding(0) var videoSampler: sampler;
+        @group(0) @binding(1) var videoTexture: texture_2d<f32>;
+
+        struct Params {
+          brightness: f32,
+          contrast: f32,
+          saturation: f32,
+          sharpen: f32,
+          texelWidth: f32,
+          texelHeight: f32,
+          _pad1: f32,
+          _pad2: f32,
+        };
+        @group(0) @binding(2) var<uniform> params: Params;
+
+        @fragment
+        fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+          let uv = input.uv;
+
+          // 3x3 box blur for noise reduction (sampled from neighbors)
+          let tw = params.texelWidth;
+          let th = params.texelHeight;
+
+          let c00 = textureSample(videoTexture, videoSampler, uv + vec2f(-tw, -th));
+          let c10 = textureSample(videoTexture, videoSampler, uv + vec2f(0.0, -th));
+          let c20 = textureSample(videoTexture, videoSampler, uv + vec2f( tw, -th));
+          let c01 = textureSample(videoTexture, videoSampler, uv + vec2f(-tw, 0.0));
+          let c11 = textureSample(videoTexture, videoSampler, uv);
+          let c21 = textureSample(videoTexture, videoSampler, uv + vec2f( tw, 0.0));
+          let c02 = textureSample(videoTexture, videoSampler, uv + vec2f(-tw,  th));
+          let c12 = textureSample(videoTexture, videoSampler, uv + vec2f(0.0,  th));
+          let c22 = textureSample(videoTexture, videoSampler, uv + vec2f( tw,  th));
+
+          // Noise reduction: simple 3x3 Gaussian-like kernel (weighted average)
+          // Weights: center=4, edge=2, corner=1 → total=16
+          let blurred = (c00 + c20 + c02 + c22) * 0.0625
+                      + (c10 + c01 + c21 + c12) * 0.125
+                      + c11 * 0.25;
+
+          // Blend original with blurred based on sharpen param (inverse: less sharpen = more blur blend)
+          let noiseReduceAmount = max(0.0, 1.0 - params.sharpen) * 0.3;
+          var color = mix(c11, blurred, noiseReduceAmount);
+
+          // Adaptive sharpening (unsharp mask)
+          if (params.sharpen > 0.0) {
+            let sharp = c11 + (4.0 * c11 - c01 - c21 - c10 - c12) * params.sharpen;
+            color = vec4f(clamp(sharp.rgb, vec3f(0.0), vec3f(1.0)), color.a);
+          }
+
+          // Brightness adjustment
+          color = vec4f(color.rgb + params.brightness, color.a);
+
+          // Contrast adjustment
+          color = vec4f((color.rgb - 0.5) * params.contrast + 0.5, color.a);
+
+          // Saturation adjustment
+          let luminance = dot(color.rgb, vec3f(0.2126, 0.7152, 0.0722));
+          color = vec4f(mix(vec3f(luminance), color.rgb, params.saturation), color.a);
+
+          return color;
+        }
+      `;
+
+      const shaderModule = this.device.createShaderModule({ code: shaderCode });
+
+      // Create bind group layout
+      const bindGroupLayout = this.device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        ],
+      });
+
+      // Create render pipeline
+      this.pipeline = this.device.createRenderPipeline({
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [bindGroupLayout],
+        }),
+        vertex: {
+          module: shaderModule,
+          entryPoint: 'vertexMain',
+        },
+        fragment: {
+          module: shaderModule,
+          entryPoint: 'fragmentMain',
+          targets: [{ format: this.format }],
+        },
+        primitive: {
+          topology: 'triangle-list',
+        },
+      });
+
+      // Create sampler
+      this.sampler = this.device.createSampler({
+        magFilter: 'linear',
+        minFilter: 'linear',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+      });
+
+      this.initialized = true;
+      return true;
+    } catch {
+      this.initialized = false;
+      return false;
+    }
+  }
+
+  async isReady(): Promise<boolean> {
+    return this.initPromise;
+  }
+
+  processFrame(source: HTMLVideoElement | HTMLCanvasElement, target: HTMLCanvasElement): void {
+    if (!this.initialized || !this.device || !this.pipeline || !this.sampler) return;
+
+    try {
+      const width = target.width || ('videoWidth' in source ? (source as HTMLVideoElement).videoWidth : source.width) || 1280;
+      const height = target.height || ('videoHeight' in source ? (source as HTMLVideoElement).videoHeight : source.height) || 720;
+      target.width = width;
+      target.height = height;
+
+      // Configure canvas context for WebGPU
+      const gpuContext = target.getContext('webgpu') as GPUCanvasContext | null;
+      if (!gpuContext) return;
+
+      gpuContext.configure({
+        device: this.device,
+        format: this.format,
+        alphaMode: 'opaque',
+      });
+
+      // Upload video frame to GPU texture
+      if (this.texture) this.texture.destroy();
+      this.texture = this.device.createTexture({
+        size: [width, height],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+
+      this.device.queue.copyExternalImageToTexture(
+        { source: source as any, flipY: true },
+        { texture: this.texture },
+        [width, height],
+      );
+
+      // Create uniform buffer for processing params
+      const uniformData = new Float32Array([
+        0.0,    // brightness
+        1.05,   // contrast
+        1.0,    // saturation
+        0.15,   // sharpen
+        1.0 / width,  // texelWidth
+        1.0 / height, // texelHeight
+        0.0,    // padding
+        0.0,    // padding
+      ]);
+      const uniformBuffer = this.device.createBuffer({
+        size: uniformData.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      this.device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+      // Create bind group
+      const bindGroup = this.device.createBindGroup({
+        layout: this.pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.sampler },
+          { binding: 1, resource: this.texture.createView() },
+          { binding: 2, resource: { buffer: uniformBuffer } },
+        ],
+      });
+
+      // Render
+      const commandEncoder = this.device.createCommandEncoder();
+      const textureView = gpuContext.getCurrentTexture().createView();
+
+      const renderPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+          view: textureView,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+
+      renderPass.setPipeline(this.pipeline);
+      renderPass.setBindGroup(0, bindGroup);
+      renderPass.draw(6); // 6 vertices for 2 triangles
+      renderPass.end();
+
+      this.device.queue.submit([commandEncoder.finish()]);
+
+      // Clean up per-frame resources
+      uniformBuffer.destroy();
+    } catch {
+      // WebGPU processing failed — the factory will fall back
+    }
+  }
+
+  destroy() {
+    if (this.texture) this.texture.destroy();
+    if (this.device) this.device.destroy();
+    this.device = null;
+    this.context = null;
+    this.pipeline = null;
+    this.sampler = null;
+    this.texture = null;
+    this.bindGroup = null;
+    this.initialized = false;
+  }
 }
 
 // ============ WEBGL2 VIDEO PROCESSOR ============
@@ -305,18 +585,74 @@ class Canvas2DVideoProcessor implements VideoFrameProcessor {
 // ============ VIDEO PROCESSOR FACTORY ============
 
 let cachedCapabilities: GPUCapabilities | null = null;
+let webgpuInitFailed = false; // Track if WebGPU actually failed to init at runtime
 
 export function getGPUCapabilities(): GPUCapabilities {
   if (!cachedCapabilities) cachedCapabilities = detectGPUCapabilities();
+  // If WebGPU init failed at runtime, report honestly
+  if (webgpuInitFailed && cachedCapabilities.videoProcessingMode === 'webgpu') {
+    cachedCapabilities = {
+      ...cachedCapabilities,
+      videoProcessingMode: cachedCapabilities.webgl2 ? 'webgl2' : cachedCapabilities.webgl1 ? 'webgl1' : 'canvas2d',
+    };
+  }
   return cachedCapabilities;
+}
+
+/** Reset cached capabilities (useful after WebGPU init failure) */
+export function resetGPUCapabilities(): void {
+  cachedCapabilities = null;
+  webgpuInitFailed = false;
+}
+
+export async function createVideoProcessorAsync(): Promise<VideoFrameProcessor> {
+  const caps = getGPUCapabilities();
+
+  if (caps.videoProcessingMode === 'webgpu') {
+    try {
+      const processor = new WebGPUVideoProcessor();
+      const ready = await processor.isReady();
+      if (ready) {
+        return processor;
+      }
+      // WebGPU init failed — mark it and fall back
+      processor.destroy();
+      webgpuInitFailed = true;
+      cachedCapabilities = null; // Force re-detection with honest reporting
+    } catch {
+      webgpuInitFailed = true;
+      cachedCapabilities = null;
+    }
+  }
+
+  // Fall back to WebGL2
+  try { return new WebGL2VideoProcessor(); } catch {}
+  return new Canvas2DVideoProcessor();
 }
 
 export function createVideoProcessor(): VideoFrameProcessor {
   const caps = getGPUCapabilities();
 
   switch (caps.videoProcessingMode) {
-    case 'webgpu':
-      // WebGPU path — fall through to WebGL2 for now as WebGPU video is still experimental
+    case 'webgpu': {
+      // WebGPU requires async init — return a synchronous wrapper that
+      // falls back to WebGL2 initially and upgrades on next frame
+      // For sync callers, we try WebGPU but fall back if not ready
+      try {
+        const processor = new WebGPUVideoProcessor();
+        // processor.isReady() is async; check if it looks initialized
+        // If WebGPU previously failed, skip
+        if (webgpuInitFailed) {
+          break; // Fall through to WebGL2
+        }
+        // Return a deferred processor that tries WebGPU first
+        return new DeferredWebGPUProcessor(processor);
+      } catch {
+        webgpuInitFailed = true;
+        cachedCapabilities = null;
+      }
+      break;
+    }
     case 'webgl2':
       try { return new WebGL2VideoProcessor(); } catch {}
       return new Canvas2DVideoProcessor();
@@ -326,11 +662,63 @@ export function createVideoProcessor(): VideoFrameProcessor {
     default:
       return new Canvas2DVideoProcessor();
   }
+
+  // Fallback from WebGPU failure
+  try { return new WebGL2VideoProcessor(); } catch {}
+  return new Canvas2DVideoProcessor();
 }
 
-// ============ WASM CODEC STUB ============
-// Placeholder for future WASM AV1 codec integration
-// When WASM SIMD is available, codec operations run in a Web Worker
+/**
+ * Deferred processor: tries WebGPU, falls back to WebGL2 if not ready.
+ * This allows the sync createVideoProcessor() API to still work while
+ * attempting to use WebGPU when it becomes available.
+ */
+class DeferredWebGPUProcessor implements VideoFrameProcessor {
+  private webgpuProcessor: WebGPUVideoProcessor;
+  private fallback: VideoFrameProcessor | null = null;
+  private resolved: VideoFrameProcessor | null = null;
+
+  constructor(webgpuProcessor: WebGPUVideoProcessor) {
+    this.webgpuProcessor = webgpuProcessor;
+    // Kick off the async init
+    this.webgpuProcessor.isReady().then(ready => {
+      if (ready) {
+        this.resolved = this.webgpuProcessor;
+      } else {
+        this.webgpuProcessor.destroy();
+        webgpuInitFailed = true;
+        cachedCapabilities = null;
+        this.fallback = this.createFallback();
+        this.resolved = this.fallback;
+      }
+    });
+  }
+
+  private createFallback(): VideoFrameProcessor {
+    try { return new WebGL2VideoProcessor(); } catch {}
+    return new Canvas2DVideoProcessor();
+  }
+
+  processFrame(source: HTMLVideoElement | HTMLCanvasElement, target: HTMLCanvasElement): void {
+    if (this.resolved) {
+      this.resolved.processFrame(source, target);
+    } else if (this.fallback) {
+      this.fallback.processFrame(source, target);
+    }
+    // If neither is ready yet, the frame is dropped (WebGPU is initializing)
+    // The next frame will render once init completes
+  }
+
+  destroy() {
+    this.webgpuProcessor.destroy();
+    if (this.fallback) this.fallback.destroy();
+  }
+}
+
+// ============ CODEC PROCESSOR ============
+// Simple color-space conversion + quantization for frame encoding/decoding.
+// NOT a real video codec — this is a lightweight transform that reduces data
+// size via YUV conversion and chroma subsampling.
 
 export interface CodecProcessor {
   encode(frame: ImageData): Uint8Array | null;
@@ -342,20 +730,128 @@ export function createCodecProcessor(): CodecProcessor | null {
   const caps = getGPUCapabilities();
   if (!caps.wasm) return null;
 
-  // Return a JS-based codec stub that will be replaced with WASM AV1 when available
+  // Codec dimensions are tracked per encode/decode cycle
+  let lastWidth = 0;
+  let lastHeight = 0;
+
   return {
     encode(frame: ImageData): Uint8Array | null {
-      // Stub: return raw pixel data (placeholder for WASM AV1 encoding)
-      return new Uint8Array(frame.data.buffer.slice(0));
+      const { width, height, data } = frame;
+      lastWidth = width;
+      lastHeight = height;
+
+      // RGBA → YUV420 with chroma subsampling
+      // Y plane: width * height bytes
+      // U plane: (width/2) * (height/2) bytes
+      // V plane: (width/2) * (height/2) bytes
+      const ySize = width * height;
+      const uvSize = Math.floor(width / 2) * Math.floor(height / 2);
+      const totalSize = ySize + uvSize * 2;
+
+      const output = new Uint8Array(totalSize);
+
+      // Convert RGBA to Y (full res)
+      for (let i = 0; i < ySize; i++) {
+        const r = data[i * 4];
+        const g = data[i * 4 + 1];
+        const b = data[i * 4 + 2];
+        // Standard BT.601 Y calculation
+        output[i] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+      }
+
+      // Convert to U (half res) — Cb
+      const uOffset = ySize;
+      for (let y = 0; y < Math.floor(height / 2); y++) {
+        for (let x = 0; x < Math.floor(width / 2); x++) {
+          // Average 2x2 block for chroma
+          let rSum = 0, gSum = 0, bSum = 0;
+          const baseIdx = (y * 2 * width + x * 2) * 4;
+          for (let dy = 0; dy < 2; dy++) {
+            for (let dx = 0; dx < 2; dx++) {
+              const idx = baseIdx + (dy * width + dx) * 4;
+              if (idx + 2 < data.length) {
+                rSum += data[idx];
+                gSum += data[idx + 1];
+                bSum += data[idx + 2];
+              }
+            }
+          }
+          // U = (B - Y) scaled to 0-255
+          const avgB = bSum / 4;
+          const avgG = gSum / 4;
+          const avgR = rSum / 4;
+          const luma = 0.299 * avgR + 0.587 * avgG + 0.114 * avgB;
+          output[uOffset + y * Math.floor(width / 2) + x] = Math.round(128 + (avgB - luma) * 0.5);
+        }
+      }
+
+      // Convert to V (half res) — Cr
+      const vOffset = ySize + uvSize;
+      for (let y = 0; y < Math.floor(height / 2); y++) {
+        for (let x = 0; x < Math.floor(width / 2); x++) {
+          let rSum = 0, gSum = 0, bSum = 0;
+          const baseIdx = (y * 2 * width + x * 2) * 4;
+          for (let dy = 0; dy < 2; dy++) {
+            for (let dx = 0; dx < 2; dx++) {
+              const idx = baseIdx + (dy * width + dx) * 4;
+              if (idx + 2 < data.length) {
+                rSum += data[idx];
+                gSum += data[idx + 1];
+                bSum += data[idx + 2];
+              }
+            }
+          }
+          const avgR = rSum / 4;
+          const avgG = gSum / 4;
+          const avgB = bSum / 4;
+          const luma = 0.299 * avgR + 0.587 * avgG + 0.114 * avgB;
+          output[vOffset + y * Math.floor(width / 2) + x] = Math.round(128 + (avgR - luma) * 0.5);
+        }
+      }
+
+      return output;
     },
+
     decode(data: Uint8Array): ImageData | null {
-      // Stub: treat as raw pixel data (placeholder for WASM AV1 decoding)
-      const len = data.length;
-      const pixels = len / 4;
-      const w = Math.ceil(Math.sqrt(pixels));
-      const h = Math.ceil(pixels / w);
-      return new ImageData(new Uint8ClampedArray(data.buffer as ArrayBuffer), w, h);
+      const width = lastWidth;
+      const height = lastHeight;
+      if (width === 0 || height === 0) return null;
+
+      const ySize = width * height;
+      const uvWidth = Math.floor(width / 2);
+      const uvHeight = Math.floor(height / 2);
+      const uvSize = uvWidth * uvHeight;
+
+      if (data.length < ySize + uvSize * 2) return null;
+
+      const pixels = new Uint8ClampedArray(width * height * 4);
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const yVal = data[y * width + x];
+
+          // Upsample chroma
+          const ux = Math.min(Math.floor(x / 2), uvWidth - 1);
+          const uy = Math.min(Math.floor(y / 2), uvHeight - 1);
+          const uVal = data[ySize + uy * uvWidth + ux] - 128;
+          const vVal = data[ySize + uvSize + uy * uvWidth + ux] - 128;
+
+          // YUV → RGB (BT.601 inverse)
+          const r = Math.max(0, Math.min(255, Math.round(yVal + 1.402 * vVal)));
+          const g = Math.max(0, Math.min(255, Math.round(yVal - 0.344136 * uVal - 0.714136 * vVal)));
+          const b = Math.max(0, Math.min(255, Math.round(yVal + 1.772 * uVal)));
+
+          const pixIdx = (y * width + x) * 4;
+          pixels[pixIdx] = r;
+          pixels[pixIdx + 1] = g;
+          pixels[pixIdx + 2] = b;
+          pixels[pixIdx + 3] = 255;
+        }
+      }
+
+      return new ImageData(pixels, width, height);
     },
+
     destroy() {},
   };
 }

@@ -75,18 +75,7 @@ export function SlideViewer({
     (index: number) => {
       if (!engine) return;
       try {
-        // Use the engine's broadcast method to notify all peers
-        const myNode = engine.getMyNode();
-        if (myNode) {
-          (engine as any).broadcastToChildren({
-            type: 'slide-change',
-            payload: { slideIndex: index, timestamp: Date.now() },
-            senderId: myNode.peerId,
-            senderName: myNode.displayName,
-            roomId: '',
-            timestamp: Date.now(),
-          });
-        }
+        engine.broadcastSlideChange(index);
       } catch {
         // Broadcast may fail silently
       }
@@ -127,24 +116,10 @@ export function SlideViewer({
     return () => window.removeEventListener('keydown', handler);
   }, [isSpeaker, nextSlide, prevSlide, isFullScreen, onToggleFullScreen]);
 
-  // Ref for engine to avoid lint issues with hook immutability
-  const engineRef = useRef(engine);
-  useEffect(() => { engineRef.current = engine; });
-
-  // Listen for slide changes from P2P (viewer mode)
-  useEffect(() => {
-    if (isSpeaker || !engineRef.current) return;
-    const eng = engineRef.current as any;
-    const originalHandler = eng._onSlideChange;
-    eng._onSlideChange = (data: { slideIndex: number }) => {
-      if (data.slideIndex >= 0 && data.slideIndex < totalSlides) {
-        onSlideChange(data.slideIndex);
-      }
-    };
-    return () => {
-      eng._onSlideChange = originalHandler;
-    };
-  }, [isSpeaker, totalSlides, onSlideChange]);
+  // Slide changes for viewers are now handled via the store.
+  // RoomPage wires eng.setOnSlideChange((slideIndex) => setCurrentSlideIndex(slideIndex)),
+  // so the store's currentSlideIndex is kept in sync with engine slide-change signals.
+  // The parent passes currentSlideIndex as a prop — no monkey-patching needed.
 
   // Annotation drawing
   const getCanvasPoint = useCallback(
@@ -741,9 +716,7 @@ export function SlideViewer({
 // Wraps SlideViewer with file upload logic for self-contained usage
 
 export function SlideViewerWithUpload({ isSpeaker }: { isSpeaker: boolean }) {
-  const { engine } = useRoomStore();
-  const [slides, setSlides] = useState<string[]>([]);
-  const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
+  const { engine, slides, currentSlideIndex, setSlides, setCurrentSlideIndex } = useRoomStore();
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -815,39 +788,19 @@ export function SlideViewerWithUpload({ isSpeaker }: { isSpeaker: boolean }) {
       setCurrentSlideIndex(index);
       if (isSpeaker && engine) {
         try {
-          const myNode = engine.getMyNode();
-          if (myNode) {
-            (engine as any).broadcastToChildren({
-              type: 'slide-change',
-              payload: { slideIndex: index, timestamp: Date.now() },
-              senderId: myNode.peerId,
-              senderName: myNode.displayName,
-              roomId: '',
-              timestamp: Date.now(),
-            });
-          }
+          engine.broadcastSlideChange(index);
         } catch {
           // Broadcast may fail
         }
       }
     },
-    [isSpeaker, engine]
+    [isSpeaker, engine, setCurrentSlideIndex]
   );
 
-  // Listen for P2P slide changes (viewer)
-  useEffect(() => {
-    if (isSpeaker || !engine) return;
-
-    const originalHandler = (engine as any)._onSlideChange;
-    (engine as any)._onSlideChange = (data: { slideIndex: number }) => {
-      if (data.slideIndex >= 0 && data.slideIndex < slides.length) {
-        setCurrentSlideIndex(data.slideIndex);
-      }
-    };
-    return () => {
-      (engine as any)._onSlideChange = originalHandler;
-    };
-  }, [isSpeaker, engine, slides.length]);
+  // Slide changes for viewers are now handled via the store.
+  // RoomPage wires eng.setOnSlideChange((slideIndex) => setCurrentSlideIndex(slideIndex)),
+  // so the store's currentSlideIndex is kept in sync with engine slide-change signals.
+  // No monkey-patching needed.
 
   return (
     <div className="h-full flex flex-col">

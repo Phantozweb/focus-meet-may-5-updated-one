@@ -2,14 +2,14 @@
 
 import { useRoomStore } from '@/store/room-store';
 import { BenchmarkEngine } from '@/lib/benchmark';
-import { BenchmarkResult, StreamQuality, DeviceType } from '@/lib/types';
+import { BenchmarkResult } from '@/lib/types';
 import {
   X, Play, CheckCircle2, AlertTriangle, XCircle, Cpu, Users, Activity,
   Shield, Wifi, Clock, BarChart3, Monitor, Smartphone, Tablet, Zap,
-  ArrowUpRight, ArrowDownRight, Radio, Layers, Database, TrendingDown, Gauge,
+  Radio, Layers, Database, TrendingDown, Gauge, StopCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 
 // ============ MAIN PANEL ============
 
@@ -20,6 +20,7 @@ export function BenchmarkPanel() {
   } = useRoomStore();
 
   const [targetUsers, setTargetUsers] = useState(700);
+  const engineRef = useRef<BenchmarkEngine | null>(null);
 
   if (!isBenchmarkVisible) return null;
 
@@ -30,15 +31,29 @@ export function BenchmarkPanel() {
 
     try {
       const engine = new BenchmarkEngine();
+      engineRef.current = engine;
       const result = await engine.runFullBenchmark(targetUsers, (phase, progress) => {
         setBenchmarkProgress({ phase, progress });
       });
       setBenchmarkResult(result);
     } catch (err) {
-      console.error('Benchmark failed:', err);
+      if (err instanceof Error && err.message === 'Benchmark cancelled') {
+        // User cancelled — don't show error
+        setBenchmarkProgress({ phase: 'Cancelled', progress: 0 });
+      } else {
+        console.error('Benchmark failed:', err);
+      }
     } finally {
       setBenchmarkRunning(false);
-      setBenchmarkProgress(null);
+      engineRef.current = null;
+      // Keep the last progress visible briefly, then clear
+      setTimeout(() => setBenchmarkProgress(null), 1000);
+    }
+  };
+
+  const cancelBenchmark = () => {
+    if (engineRef.current) {
+      engineRef.current.cancel();
     }
   };
 
@@ -71,7 +86,7 @@ export function BenchmarkPanel() {
       </div>
 
       {/* Controls */}
-      <div className="flex items-center gap-4 px-6 py-3 border-b border-zinc-800/50 flex-shrink-0">
+      <div className="flex items-center gap-4 px-6 py-3 border-b border-zinc-800/50 flex-shrink-0 flex-wrap">
         <div className="flex items-center gap-2 bg-zinc-900 rounded-lg px-3 py-2 border border-zinc-700">
           <Users className="w-4 h-4 text-zinc-400" />
           <span className="text-sm text-zinc-300">Target:</span>
@@ -85,17 +100,26 @@ export function BenchmarkPanel() {
           <span className="text-xs text-zinc-500">users</span>
         </div>
 
-        <Button
-          onClick={runBenchmark}
-          disabled={benchmarkRunning}
-          className={`${benchmarkRunning ? 'bg-zinc-700' : 'bg-emerald-600 hover:bg-emerald-700'} text-white font-semibold px-6`}
-        >
-          <Play className={`w-4 h-4 mr-2 ${benchmarkRunning ? 'animate-pulse' : ''}`} />
-          {benchmarkRunning ? 'Running...' : 'Run Stress Test'}
-        </Button>
+        {!benchmarkRunning ? (
+          <Button
+            onClick={runBenchmark}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-6"
+          >
+            <Play className="w-4 h-4 mr-2" />
+            Run Stress Test
+          </Button>
+        ) : (
+          <Button
+            onClick={cancelBenchmark}
+            className="bg-red-600 hover:bg-red-700 text-white font-semibold px-6"
+          >
+            <StopCircle className="w-4 h-4 mr-2" />
+            Cancel
+          </Button>
+        )}
 
         {benchmarkRunning && benchmarkProgress && (
-          <div className="flex-1 flex items-center gap-3">
+          <div className="flex-1 flex items-center gap-3 min-w-[200px]">
             <div className="flex-1">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs text-zinc-400 font-medium">{benchmarkProgress.phase}</span>
@@ -517,7 +541,6 @@ function GradeRing({ grade }: { grade: string }) {
   const radius = 40;
   const circumference = 2 * Math.PI * radius;
 
-  // Map grade to percentage for ring fill
   const gradePcts: Record<string, number> = {
     'A+': 0.98, 'A': 0.90, 'B+': 0.82, 'B': 0.72, 'C': 0.55, 'D': 0.40, 'F': 0.20,
   };
@@ -551,16 +574,13 @@ function RelayHealthRing({ healthy, degraded, overloaded }: { healthy: number; d
 
   const healthyPct = healthy / total;
   const degradedPct = degraded / total;
-  const overloadedPct = overloaded / total;
 
   const radius = 44;
   const circumference = 2 * Math.PI * radius;
 
   const healthyDash = healthyPct * circumference;
   const degradedDash = degradedPct * circumference;
-  const overloadedDash = overloadedPct * circumference;
 
-  const healthyOffset = 0;
   const degradedOffset = -healthyDash;
   const overloadedOffset = -(healthyDash + degradedDash);
 
@@ -569,14 +589,14 @@ function RelayHealthRing({ healthy, degraded, overloaded }: { healthy: number; d
       <circle cx="60" cy="60" r={radius} fill="none" stroke="#27272a" strokeWidth="10" />
       <circle cx="60" cy="60" r={radius} fill="none" stroke="#10b981" strokeWidth="10"
         strokeDasharray={`${healthyDash} ${circumference - healthyDash}`}
-        strokeDashoffset={healthyOffset}
+        strokeDashoffset={0}
         transform="rotate(-90 60 60)" className="transition-all duration-700" />
       <circle cx="60" cy="60" r={radius} fill="none" stroke="#f59e0b" strokeWidth="10"
         strokeDasharray={`${degradedDash} ${circumference - degradedDash}`}
         strokeDashoffset={degradedOffset}
         transform="rotate(-90 60 60)" className="transition-all duration-700" />
       <circle cx="60" cy="60" r={radius} fill="none" stroke="#ef4444" strokeWidth="10"
-        strokeDasharray={`${overloadedDash} ${circumference - overloadedDash}`}
+        strokeDasharray={`${(1 - healthyPct - degradedPct) * circumference} ${(healthyPct + degradedPct) * circumference}`}
         strokeDashoffset={overloadedOffset}
         transform="rotate(-90 60 60)" className="transition-all duration-700" />
       <text x="60" y="56" textAnchor="middle" className="fill-zinc-100 text-lg font-bold" fontSize="16">{total}</text>
@@ -781,7 +801,6 @@ function DataUsageCard({ quality, mb, color, bitrate }: {
       <div className={`text-sm font-bold ${c.text}`}>{quality}</div>
       <div className="text-lg font-black text-zinc-200">{mb} MB</div>
       <div className="text-[10px] text-zinc-500">{gb} GB · {bitrate} kbps</div>
-      <div className="text-[9px] text-zinc-600">per hour per viewer</div>
     </div>
   );
 }

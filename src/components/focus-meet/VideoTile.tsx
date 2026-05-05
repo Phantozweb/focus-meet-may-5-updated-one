@@ -1,8 +1,9 @@
 'use client';
 
 import { useRef, useEffect, useState } from 'react';
-import { Mic, MicOff, Monitor, User, Wifi, WifiOff } from 'lucide-react';
+import { Mic, MicOff, Monitor, User } from 'lucide-react';
 import { TreeNode, StreamQuality } from '@/lib/types';
+import { getOrCreateAnalyser, cleanupAnalyser } from '@/lib/audio-context';
 
 interface VideoTileProps {
   stream: MediaStream | null;
@@ -37,32 +38,37 @@ export function VideoTile({
     }
   }, [stream, isLocal]);
 
-  // Audio activity detection for speaking indicator
+  // Audio activity detection for speaking indicator — uses shared AudioContext
   useEffect(() => {
     if (!stream || !audioEnabled || isLocal) return;
 
-    const audioContext = new AudioContext();
-    const analyser = audioContext.createAnalyser();
-    const source = audioContext.createMediaStreamSource(stream);
-    source.connect(analyser);
-    analyser.fftSize = 256;
+    const peerId = node?.peerId;
+    if (!peerId) return;
+
+    const analyser = getOrCreateAnalyser(peerId, stream);
+    if (!analyser) return;
 
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     let animFrame: number;
+    let frameCount = 0;
 
     const detect = () => {
-      analyser.getByteFrequencyData(dataArray);
-      const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-      setIsSpeaking(avg > 30);
+      // Throttle to ~15fps (every 4th frame at 60fps) to save CPU
+      frameCount++;
+      if (frameCount % 4 === 0) {
+        analyser.getByteFrequencyData(dataArray);
+        const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+        setIsSpeaking(avg > 30);
+      }
       animFrame = requestAnimationFrame(detect);
     };
     detect();
 
     return () => {
       cancelAnimationFrame(animFrame);
-      audioContext.close();
+      cleanupAnalyser(peerId);
     };
-  }, [stream, audioEnabled, isLocal]);
+  }, [stream, audioEnabled, isLocal, node?.peerId]);
 
   const hasVideo = stream && videoEnabled && stream.getVideoTracks().some(t => t.enabled);
   const displayName = node?.displayName || 'Unknown';

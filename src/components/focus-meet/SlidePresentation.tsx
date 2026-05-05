@@ -68,20 +68,7 @@ export function SlidePresentation({ isSpeaker }: SlidePresentationProps) {
     (index: number) => {
       if (!engine) return;
       try {
-        const myNode = engine.getMyNode();
-        if (myNode) {
-          const engAny = engine as unknown as Record<string, unknown>;
-          if (typeof engAny.broadcastToChildren === 'function') {
-            engAny.broadcastToChildren({
-              type: 'slide-change',
-              payload: { slideIndex: index, timestamp: Date.now() },
-              senderId: myNode.peerId,
-              senderName: myNode.displayName,
-              roomId: '',
-              timestamp: Date.now(),
-            });
-          }
-        }
+        engine.broadcastSlideChange(index);
       } catch {
         // Broadcast may fail silently
       }
@@ -132,25 +119,10 @@ export function SlidePresentation({ isSpeaker }: SlidePresentationProps) {
     return () => window.removeEventListener('keydown', handler);
   }, [isSpeaker, nextSlide, prevSlide, isFullScreen, isLaserMode]);
 
-  // ---- Listen for slide changes from engine (viewer) ----
-  const engineRef = useRef(engine);
-  engineRef.current = engine;
-
-  useEffect(() => {
-    if (isSpeaker || !engineRef.current) return;
-    const eng = engineRef.current as unknown as Record<string, unknown>;
-    const originalHandler = eng._onSlideChange;
-    eng._onSlideChange = (
-      data: { slideIndex: number }
-    ) => {
-      if (data.slideIndex >= 0 && data.slideIndex < totalSlides) {
-        setCurrentSlideIndex(data.slideIndex);
-      }
-    };
-    return () => {
-      eng._onSlideChange = originalHandler;
-    };
-  }, [isSpeaker, totalSlides, setCurrentSlideIndex]);
+  // Slide changes for viewers are now handled via the store.
+  // RoomPage wires eng.setOnSlideChange((slideIndex) => setCurrentSlideIndex(slideIndex)),
+  // so the store's currentSlideIndex is kept in sync with engine slide-change signals.
+  // No monkey-patching needed — this component simply reads currentSlideIndex from the store.
 
   // ---- Laser pointer ----
   const handleSlideClick = useCallback(

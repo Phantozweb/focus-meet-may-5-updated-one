@@ -18,6 +18,7 @@ interface RoomState {
 
   // Media
   localStream: MediaStream | null; incomingStream: MediaStream | null;
+  peerStreams: Map<string, MediaStream>;
   audioEnabled: boolean; videoEnabled: boolean;
   streamHealth: StreamHealth | null; streamQuality: StreamQuality;
 
@@ -98,6 +99,8 @@ interface RoomState {
   setRoomInfo: (v: RoomInfo | null) => void; setMyNode: (v: TreeNode | null) => void;
   setNodes: (v: Map<string, TreeNode>) => void; setClusters: (v: Map<string, Cluster>) => void;
   setLocalStream: (v: MediaStream | null) => void; setIncomingStream: (v: MediaStream | null) => void;
+  setPeerStream: (peerId: string, stream: MediaStream | null) => void;
+  clearPeerStreams: () => void;
   setAudioEnabled: (v: boolean) => void; setVideoEnabled: (v: boolean) => void;
   setStreamHealth: (v: StreamHealth | null) => void; setStreamQuality: (v: StreamQuality) => void;
   addChatMessage: (m: ChatMessage) => void;
@@ -176,6 +179,7 @@ const init = {
   roomInfo: null as RoomInfo | null, myNode: null as TreeNode | null,
   nodes: new Map<string, TreeNode>(), clusters: new Map<string, Cluster>(),
   localStream: null as MediaStream | null, incomingStream: null as MediaStream | null,
+  peerStreams: new Map<string, MediaStream>(),
   audioEnabled: true, videoEnabled: true,
   streamHealth: null as StreamHealth | null, streamQuality: 'auto' as StreamQuality,
   chatMessages: [] as ChatMessage[], speakerRequests: [] as SpeakerRequest[],
@@ -222,6 +226,16 @@ export const useRoomStore = create<RoomState>((set, get) => ({
   setClusters: (clusters) => set({ clusters: new Map(clusters) }),
   setLocalStream: (localStream) => set({ localStream }),
   setIncomingStream: (incomingStream) => set({ incomingStream }),
+  setPeerStream: (peerId, stream) => set((s) => {
+    const newMap = new Map(s.peerStreams);
+    if (stream === null) {
+      newMap.delete(peerId);
+    } else {
+      newMap.set(peerId, stream);
+    }
+    return { peerStreams: newMap, incomingStream: stream ?? s.incomingStream };
+  }),
+  clearPeerStreams: () => set({ peerStreams: new Map<string, MediaStream>() }),
   setAudioEnabled: (audioEnabled) => set({ audioEnabled }),
   setVideoEnabled: (videoEnabled) => set({ videoEnabled }),
   setStreamHealth: (streamHealth) => set({ streamHealth }),

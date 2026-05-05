@@ -53,69 +53,44 @@ export function HostControls() {
       lockedBy: roomLock.isLocked ? null : myNode?.peerId || null,
     };
     setRoomLock(newLock);
-    if (engine && myNode) {
-      engine['broadcastToChildren']?.({
-        type: newLock.isLocked ? 'room-lock' : 'room-unlock',
-        payload: newLock,
-        senderId: myNode.peerId,
-        senderName: myNode.displayName,
-        roomId: '',
-        timestamp: Date.now(),
-      });
+    if (engine) {
+      if (newLock.isLocked) {
+        engine.lockRoom();
+      } else {
+        engine.unlockRoom();
+      }
     }
   };
 
   const handleMuteAll = () => {
-    if (!engine || !myNode) return;
+    if (!engine) return;
     viewerNodes.forEach((node) => {
       const action: ModerationAction = {
         type: 'mute',
         targetPeerId: node.peerId,
         targetName: node.displayName,
-        performedBy: myNode.peerId,
+        performedBy: myNode?.peerId || '',
         timestamp: Date.now(),
         reason: 'Host muted all',
       };
       addModerationAction(action);
-      engine['broadcastToChildren']?.({
-        type: 'moderation-action',
-        payload: action,
-        senderId: myNode.peerId,
-        senderName: myNode.displayName,
-        roomId: '',
-        timestamp: Date.now(),
-      });
+      engine.muteParticipant(node.peerId);
     });
   };
 
   const handleLowerAllHands = () => {
     lowerAllHands();
-    if (engine && myNode) {
-      engine['broadcastToChildren']?.({
-        type: 'moderation-action',
-        payload: {
-          type: 'lower-hand',
-          performedBy: myNode.peerId,
-          timestamp: Date.now(),
-        },
-        senderId: myNode.peerId,
-        senderName: myNode.displayName,
-        roomId: '',
-        timestamp: Date.now(),
+    if (engine) {
+      // Lower each raised hand via the engine to propagate through the P2P tree
+      handRaises.filter(h => h.isRaised).forEach((hr) => {
+        engine.lowerParticipantHand(hr.peerId);
       });
     }
   };
 
   const handleEndForAll = () => {
-    if (engine && myNode) {
-      engine['broadcastToChildren']?.({
-        type: 'node-disconnect',
-        payload: { reason: 'Webinar ended by host' },
-        senderId: myNode.peerId,
-        senderName: myNode.displayName,
-        roomId: '',
-        timestamp: Date.now(),
-      });
+    if (engine) {
+      engine.destroy();
     }
     reset();
     window.location.hash = '';

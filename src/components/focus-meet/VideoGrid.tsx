@@ -2,17 +2,28 @@
 
 import { useRoomStore } from '@/store/room-store';
 import { VideoTile } from './VideoTile';
-import { Monitor, LayoutGrid, User, Maximize2 } from 'lucide-react';
+import { Monitor, LayoutGrid, User, Maximize2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ViewMode } from '@/lib/types';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { useState, useRef } from 'react';
+
+/** Max tiles shown in gallery view on mobile */
+const MOBILE_MAX_GALLERY_TILES = 4;
+/** Min tile width on mobile (px) */
+const MOBILE_MIN_TILE_WIDTH = 140;
 
 export function VideoGrid() {
   const {
-    localStream, incomingStream, myNode, nodes,
+    localStream, incomingStream, peerStreams, myNode, nodes,
     audioEnabled, videoEnabled, roomInfo,
     viewMode, setViewMode, screenShare,
   } = useRoomStore();
+
+  const isMobile = useIsMobile();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollIndex, setScrollIndex] = useState(0);
 
   const isSpeaker = myNode?.role === 'host' || myNode?.role === 'speaker';
   const allNodes = Array.from(nodes.values());
@@ -50,13 +61,13 @@ export function VideoGrid() {
           </div>
         </div>
 
-        {/* Thumbnail strip */}
+        {/* Thumbnail strip — horizontally scrollable on mobile */}
         <div className="px-4 pb-3">
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
             {presenterNodes.filter(n => n.peerId !== screenShare.sharedBy).map(node => (
-              <div key={node.peerId} className="flex-shrink-0 w-32 h-20">
+              <div key={node.peerId} className="flex-shrink-0" style={{ width: isMobile ? MOBILE_MIN_TILE_WIDTH : 128, height: isMobile ? Math.round(MOBILE_MIN_TILE_WIDTH * 0.625) : 80 }}>
                 <VideoTile
-                  stream={node.peerId === myNode?.peerId ? localStream : incomingStream}
+                  stream={node.peerId === myNode?.peerId ? localStream : (peerStreams.get(node.peerId) ?? incomingStream)}
                   node={node}
                   isLocal={node.peerId === myNode?.peerId}
                   isSmall={true}
@@ -74,7 +85,16 @@ export function VideoGrid() {
   // Gallery view - grid of all participants
   if (viewMode === 'gallery') {
     const allParticipants = allNodes;
-    const cols = allParticipants.length <= 2 ? 1 : allParticipants.length <= 4 ? 2 : allParticipants.length <= 9 ? 3 : 4;
+
+    // Mobile: limit to max tiles, rest goes to scrollable strip
+    const visibleParticipants = isMobile
+      ? allParticipants.slice(0, MOBILE_MAX_GALLERY_TILES)
+      : allParticipants;
+    const overflowParticipants = isMobile
+      ? allParticipants.slice(MOBILE_MAX_GALLERY_TILES)
+      : [];
+
+    const cols = visibleParticipants.length <= 1 ? 1 : visibleParticipants.length <= 2 ? 2 : visibleParticipants.length <= 4 ? 2 : 3;
 
     return (
       <div className="flex-1 flex flex-col bg-zinc-950 overflow-hidden relative">
@@ -86,7 +106,7 @@ export function VideoGrid() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 backdrop-blur-sm"
+                  className="h-8 w-8 bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 backdrop-blur-sm touch-manipulation"
                   onClick={() => setViewMode('speaker')}
                 >
                   <Maximize2 className="w-4 h-4" />
@@ -105,10 +125,10 @@ export function VideoGrid() {
               gridAutoRows: '1fr',
             }}
           >
-            {allParticipants.map(node => (
+            {visibleParticipants.map(node => (
               <VideoTile
                 key={node.peerId}
-                stream={node.peerId === myNode?.peerId ? localStream : incomingStream}
+                stream={node.peerId === myNode?.peerId ? localStream : (peerStreams.get(node.peerId) ?? incomingStream)}
                 node={node}
                 isLocal={node.peerId === myNode?.peerId}
                 audioEnabled={node.peerId === myNode?.peerId ? audioEnabled : undefined}
@@ -117,6 +137,33 @@ export function VideoGrid() {
             ))}
           </div>
         </div>
+
+        {/* Mobile overflow strip — horizontally scrollable for extra participants */}
+        {overflowParticipants.length > 0 && (
+          <div className="px-3 pb-2 border-t border-zinc-800/50 pt-2">
+            <div className="flex items-center gap-2 overflow-x-auto scrollbar-none" ref={scrollRef}>
+              <span className="text-[10px] text-zinc-500 flex-shrink-0">
+                +{overflowParticipants.length} more
+              </span>
+              {overflowParticipants.map(node => (
+                <div
+                  key={node.peerId}
+                  className="flex-shrink-0"
+                  style={{ width: MOBILE_MIN_TILE_WIDTH, height: Math.round(MOBILE_MIN_TILE_WIDTH * 0.625) }}
+                >
+                  <VideoTile
+                    stream={node.peerId === myNode?.peerId ? localStream : (peerStreams.get(node.peerId) ?? incomingStream)}
+                    node={node}
+                    isLocal={node.peerId === myNode?.peerId}
+                    isSmall={true}
+                    audioEnabled={node.peerId === myNode?.peerId ? audioEnabled : undefined}
+                    videoEnabled={node.peerId === myNode?.peerId ? videoEnabled : undefined}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -132,7 +179,7 @@ export function VideoGrid() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 backdrop-blur-sm"
+                className="h-8 w-8 bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 backdrop-blur-sm touch-manipulation"
                 onClick={() => setViewMode('gallery')}
               >
                 <LayoutGrid className="w-4 h-4" />
@@ -166,12 +213,12 @@ export function VideoGrid() {
         </div>
       </div>
 
-      {/* Thumbnail strip for speakers */}
+      {/* Thumbnail strip for speakers — horizontally scrollable on mobile */}
       {presenterNodes.length > 1 && (
         <div className="px-4 pb-3">
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
             {isSpeaker && (
-              <div className="flex-shrink-0 w-36 h-24">
+              <div className="flex-shrink-0" style={{ width: isMobile ? MOBILE_MIN_TILE_WIDTH : 144, height: isMobile ? Math.round(MOBILE_MIN_TILE_WIDTH * 0.625) : 96 }}>
                 <VideoTile
                   stream={localStream}
                   node={myNode}
@@ -185,9 +232,9 @@ export function VideoGrid() {
             {presenterNodes
               .filter(n => n.peerId !== myNode?.peerId)
               .map(node => (
-                <div key={node.peerId} className="flex-shrink-0 w-36 h-24">
+                <div key={node.peerId} className="flex-shrink-0" style={{ width: isMobile ? MOBILE_MIN_TILE_WIDTH : 144, height: isMobile ? Math.round(MOBILE_MIN_TILE_WIDTH * 0.625) : 96 }}>
                   <VideoTile
-                    stream={incomingStream}
+                    stream={peerStreams.get(node.peerId) ?? incomingStream}
                     node={node}
                     isLocal={false}
                     isSmall={true}

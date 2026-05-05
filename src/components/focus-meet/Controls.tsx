@@ -11,7 +11,9 @@ import {
   Smile, ThumbsUp, PartyPopper, Heart,
   Flame, HandMetal, Laugh, Circle, CircleDot, Loader2,
   Headphones, Presentation, Maximize,
+  DoorOpen, Shield, HandHelping,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 const REACTION_EMOJIS: { type: ReactionType; icon: React.ReactNode; label: string }[] = [
@@ -42,9 +44,13 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
     setRecorder, setRecordingState,
     addReaction, reset, isHost, roomInfo,
     streamQuality, setStreamQuality,
+    isPresenting, setIsPresenting,
+    isWaitingRoomEnabled, setWaitingRoomEnabled,
+    handRaises, addHandRaise, removeHandRaise,
   } = useRoomStore();
 
   const isSpeaker = myNode?.role === 'host' || myNode?.role === 'speaker';
+  const hasRaisedHand = handRaises.some(h => h.peerId === myNode?.peerId && h.isRaised);
   const isAudioOnly = streamQuality === 'audio-only';
   const [showReactions, setShowReactions] = useState(false);
   const [showMore, setShowMore] = useState(false);
@@ -82,37 +88,54 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
     if (engine) engine.requestToSpeak();
   };
 
+  const handleToggleHand = () => {
+    if (!engine || !myNode) return;
+    if (hasRaisedHand) {
+      engine.lowerHand();
+      removeHandRaise(myNode.peerId);
+    } else {
+      engine.raiseHand();
+      addHandRaise({
+        peerId: myNode.peerId,
+        displayName: myNode.displayName,
+        isRaised: true,
+        raisedAt: Date.now(),
+      });
+    }
+  };
+
+  const handleEndForAll = () => {
+    if (engine) engine.destroy();
+    reset();
+    window.location.hash = '';
+  };
+
+  const handleToggleWaitingRoom = () => {
+    const newValue = !isWaitingRoomEnabled;
+    setWaitingRoomEnabled(newValue);
+    engine?.setWaitingRoomEnabled(newValue);
+    toast.success(newValue ? 'Waiting room enabled' : 'Waiting room disabled');
+  };
+
   const handleScreenShare = async () => {
+    if (!engine) return;
+
     if (screenShare.isSharing) {
-      screenShare.stream?.getTracks().forEach(t => t.stop());
+      engine.stopScreenShare();
       setScreenShare({ isSharing: false, sharedBy: null, sharedByName: null, stream: null });
-      if (engine && myNode) {
-        const engAny = engine as unknown as Record<string, unknown>;
-        if (typeof engAny.broadcastToChildren === 'function') {
-          engAny.broadcastToChildren({
-            type: 'screen-share-stop' as string,
-            payload: {},
-            senderId: myNode.peerId,
-            senderName: myNode.displayName,
-            roomId: '',
-            timestamp: Date.now(),
-          });
-        }
-      }
       return;
     }
 
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      setScreenShare({
-        isSharing: true,
-        sharedBy: myNode?.peerId ?? null,
-        sharedByName: myNode?.displayName ?? null,
-        stream,
-      });
-      stream.getVideoTracks()[0].onended = () => {
-        setScreenShare({ isSharing: false, sharedBy: null, sharedByName: null, stream: null });
-      };
+      const stream = await engine.startScreenShare();
+      if (stream) {
+        setScreenShare({
+          isSharing: true,
+          sharedBy: myNode?.peerId ?? null,
+          sharedByName: myNode?.displayName ?? null,
+          stream,
+        });
+      }
     } catch {
       // User cancelled or error
     }
@@ -188,7 +211,9 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
 
   return (
     <div className="bg-zinc-900 border-t border-zinc-800 px-1 sm:px-4 py-2 sm:py-2.5 safe-bottom">
-      <div className="flex items-center justify-center gap-0 sm:gap-1 md:gap-1.5">
+      <div className="flex items-center justify-center gap-0 sm:gap-1 md:gap-1.5 overflow-x-auto scrollbar-none -webkit-overflow-scrolling-touch"
+        style={{ touchAction: 'manipulation' }}
+      >
         {/* Audio toggle */}
         <ControlButton
           onClick={handleToggleAudio}
@@ -199,6 +224,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
           inactiveLabel="Unmute"
           activeClass="bg-zinc-700 hover:bg-zinc-600 text-white"
           inactiveClass="bg-red-600 hover:bg-red-700 text-white"
+          isMobile={isMobile}
         />
 
         {/* Video toggle */}
@@ -211,6 +237,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
           inactiveLabel="Video"
           activeClass="bg-zinc-700 hover:bg-zinc-600 text-white"
           inactiveClass="bg-red-600 hover:bg-red-700 text-white"
+          isMobile={isMobile}
         />
 
         {/* Screen share (host/speaker only) */}
@@ -224,6 +251,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
             inactiveLabel="Sharing"
             activeClass="bg-zinc-700 hover:bg-zinc-600 text-white"
             inactiveClass="bg-emerald-600 hover:bg-emerald-700 text-white"
+            isMobile={isMobile}
           />
         )}
 
@@ -238,27 +266,29 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
             inactiveLabel={recordingState.clipCount > 0 ? `${recordingState.clipCount}` : 'Rec'}
             activeClass="bg-zinc-700 hover:bg-zinc-600 text-white"
             inactiveClass="bg-red-600 hover:bg-red-700 text-white animate-pulse"
+            isMobile={isMobile}
           />
         )}
 
-        {/* Request to speak (viewer only) */}
+        {/* Raise/Lower Hand (viewer only) */}
         {!isSpeaker && (
           <ControlButton
-            onClick={handleRequestToSpeak}
-            active={true}
+            onClick={handleToggleHand}
+            active={hasRaisedHand}
             activeIcon={<Hand className="w-4 h-4 sm:w-5 sm:h-5" />}
-            inactiveIcon={<Hand className="w-4 h-4 sm:w-5 sm:h-5" />}
-            activeLabel="Speak"
-            inactiveLabel="Speak"
+            inactiveIcon={<HandHelping className="w-4 h-4 sm:w-5 sm:h-5" />}
+            activeLabel="Lower"
+            inactiveLabel="Raise"
             activeClass="bg-amber-600/80 hover:bg-amber-600 text-white"
-            inactiveClass=""
+            inactiveClass="bg-zinc-700 hover:bg-zinc-600 text-white"
+            isMobile={isMobile}
           />
         )}
 
-        <div className="w-px h-6 sm:h-8 bg-zinc-700 mx-0.5 sm:mx-1" />
+        <div className="w-px h-6 sm:h-8 bg-zinc-700 mx-0.5 sm:mx-1 flex-shrink-0" />
 
         {/* Reactions */}
-        <div className="relative" ref={reactionsRef}>
+        <div className="relative flex-shrink-0" ref={reactionsRef}>
           <ControlButton
             onClick={() => setShowReactions(!showReactions)}
             active={false}
@@ -268,6 +298,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
             inactiveLabel="React"
             activeClass="bg-zinc-700 hover:bg-zinc-600 text-white"
             inactiveClass="bg-zinc-700 hover:bg-zinc-600 text-white"
+            isMobile={isMobile}
           />
           {showReactions && (
             <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-zinc-800 border border-zinc-700 rounded-xl p-1.5 flex gap-0.5 shadow-xl z-50">
@@ -275,7 +306,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
                 <button
                   key={r.type}
                   onClick={() => handleReaction(r.type)}
-                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg hover:bg-zinc-700 flex items-center justify-center text-base sm:text-lg transition-colors"
+                  className="w-10 h-10 sm:w-9 sm:h-9 rounded-lg hover:bg-zinc-700 flex items-center justify-center text-base sm:text-lg transition-colors touch-manipulation"
                   title={r.type}
                 >
                   {r.label}
@@ -295,6 +326,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
           inactiveLabel="Chat"
           activeClass="bg-blue-600 hover:bg-blue-700 text-white"
           inactiveClass="bg-zinc-700 hover:bg-zinc-600 text-white"
+          isMobile={isMobile}
         />
 
         {/* Participants toggle */}
@@ -307,10 +339,11 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
           inactiveLabel="People"
           activeClass="bg-blue-600 hover:bg-blue-700 text-white"
           inactiveClass="bg-zinc-700 hover:bg-zinc-600 text-white"
+          isMobile={isMobile}
         />
 
         {/* Files toggle - hidden on very small mobile */}
-        <div className="hidden sm:block">
+        <div className="hidden sm:block flex-shrink-0">
           <ControlButton
             onClick={handleFilesToggle}
             active={isFilesOpen}
@@ -320,14 +353,15 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
             inactiveLabel="Files"
             activeClass="bg-blue-600 hover:bg-blue-700 text-white"
             inactiveClass="bg-zinc-700 hover:bg-zinc-600 text-white"
+            isMobile={isMobile}
           />
         </div>
 
-        <div className="w-px h-6 sm:h-8 bg-zinc-700 mx-0.5 sm:mx-1" />
+        <div className="w-px h-6 sm:h-8 bg-zinc-700 mx-0.5 sm:mx-1 flex-shrink-0" />
 
         {/* More menu - host only options */}
         {isHost && (
-          <div className="relative" ref={moreRef}>
+          <div className="relative flex-shrink-0" ref={moreRef}>
             <ControlButton
               onClick={() => setShowMore(!showMore)}
               active={false}
@@ -337,9 +371,22 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
               inactiveLabel="More"
               activeClass="bg-zinc-700 hover:bg-zinc-600 text-white"
               inactiveClass="bg-zinc-700 hover:bg-zinc-600 text-white"
+              isMobile={isMobile}
             />
             {showMore && (
-              <div className="absolute bottom-full mb-2 right-0 bg-zinc-800 border border-zinc-700 rounded-xl py-1 shadow-xl min-w-[160px] z-50">
+              <div className="absolute bottom-full mb-2 right-0 bg-zinc-800 border border-zinc-700 rounded-xl py-1 shadow-xl min-w-[180px] z-50">
+                <MoreMenuItem
+                  icon={<Presentation className="w-4 h-4" />}
+                  label="Presentation Mode"
+                  active={isPresenting}
+                  onClick={() => { setIsPresenting(!isPresenting); setShowMore(false); }}
+                />
+                <MoreMenuItem
+                  icon={<Shield className="w-4 h-4" />}
+                  label="Waiting Room"
+                  active={isWaitingRoomEnabled}
+                  onClick={() => { handleToggleWaitingRoom(); setShowMore(false); }}
+                />
                 <MoreMenuItem
                   icon={<Maximize className="w-4 h-4" />}
                   label="Network View"
@@ -351,6 +398,14 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
                   label="Audio Only"
                   active={isAudioOnly}
                   onClick={() => { setStreamQuality(isAudioOnly ? 'auto' : 'audio-only'); setShowMore(false); }}
+                />
+                <div className="my-1 border-t border-zinc-700" />
+                <MoreMenuItem
+                  icon={<DoorOpen className="w-4 h-4" />}
+                  label="End for All"
+                  active={false}
+                  danger
+                  onClick={() => { handleEndForAll(); setShowMore(false); }}
                 />
               </div>
             )}
@@ -367,6 +422,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
           inactiveLabel="Leave"
           activeClass="bg-red-600 hover:bg-red-700 text-white"
           inactiveClass=""
+          isMobile={isMobile}
         />
       </div>
     </div>
@@ -376,6 +432,7 @@ export function Controls({ onMobileDrawerOpen, mobileDrawerOpen }: ControlsProps
 function ControlButton({
   onClick, active, activeIcon, inactiveIcon,
   activeLabel, inactiveLabel, activeClass, inactiveClass,
+  isMobile,
 }: {
   onClick: () => void;
   active: boolean;
@@ -385,15 +442,23 @@ function ControlButton({
   inactiveLabel: string;
   activeClass: string;
   inactiveClass: string;
+  isMobile?: boolean;
 }) {
+  // Mobile: min 44px touch targets; Desktop: standard sizing
+  const mobileClasses = isMobile
+    ? 'min-w-[44px] min-h-[44px] px-2.5 py-2'
+    : 'min-w-[40px] sm:min-w-[52px] px-2 sm:px-2.5 py-1.5 sm:py-2';
+
   return (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
           <button
             onClick={onClick}
-            className={`flex flex-col items-center gap-0 sm:gap-0.5 px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-lg sm:rounded-xl transition-all duration-200 min-w-[40px] sm:min-w-[52px] touch-manipulation
+            className={`flex flex-col items-center gap-0 sm:gap-0.5 rounded-lg sm:rounded-xl transition-all duration-200 touch-manipulation
+              ${mobileClasses}
               ${active ? activeClass : inactiveClass}`}
+            style={{ touchAction: 'manipulation' }}
           >
             {active ? activeIcon : inactiveIcon}
             <span className="text-[7px] sm:text-[9px] font-medium leading-none hidden sm:block">{active ? activeLabel : inactiveLabel}</span>
@@ -408,22 +473,28 @@ function ControlButton({
 }
 
 function MoreMenuItem({
-  icon, label, active, onClick,
+  icon, label, active, onClick, danger,
 }: {
   icon: React.ReactNode;
   label: string;
   active: boolean;
   onClick: () => void;
+  danger?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors
-        ${active ? 'text-blue-400 bg-blue-500/10' : 'text-zinc-300 hover:bg-zinc-700'}`}
+      className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors touch-manipulation
+        ${danger
+          ? 'text-red-400 hover:bg-red-500/10'
+          : active
+            ? 'text-blue-400 bg-blue-500/10'
+            : 'text-zinc-300 hover:bg-zinc-700'}`}
+      style={{ touchAction: 'manipulation', minHeight: '44px' }}
     >
       {icon}
       <span>{label}</span>
-      {active && <span className="ml-auto text-xs text-blue-400">On</span>}
+      {active && !danger && <span className="ml-auto text-xs text-blue-400">On</span>}
     </button>
   );
 }

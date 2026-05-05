@@ -23,16 +23,10 @@ export function HandRaiseButton() {
   const handleToggle = useCallback(() => {
     if (isRaised) {
       removeHandRaise(myPeerId);
-      // Broadcast hand-lower signal
-      if (engine && myNode) {
-        engine['broadcastToChildren']?.({
-          type: 'hand-lower',
-          payload: { peerId: myPeerId },
-          senderId: myPeerId,
-          senderName: myNode.displayName,
-          roomId: '',
-          timestamp: Date.now(),
-        });
+      // Use engine's lowerHand() which properly sends the hand-lower signal
+      // through the P2P tree (to parent + children)
+      if (engine) {
+        engine.lowerHand();
       }
     } else {
       const hr: HandRaiseType = {
@@ -42,16 +36,10 @@ export function HandRaiseButton() {
         isRaised: true,
       };
       addHandRaise(hr);
-      // Broadcast hand-raise signal
-      if (engine && myNode) {
-        engine['broadcastToChildren']?.({
-          type: 'hand-raise',
-          payload: hr,
-          senderId: myPeerId,
-          senderName: myNode.displayName,
-          roomId: '',
-          timestamp: Date.now(),
-        });
+      // Use engine's raiseHand() which properly sends the hand-raise signal
+      // through the P2P tree (to parent + children)
+      if (engine) {
+        engine.raiseHand();
       }
     }
   }, [isRaised, myPeerId, myNode, engine, addHandRaise, removeHandRaise]);

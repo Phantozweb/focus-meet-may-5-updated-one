@@ -170,7 +170,7 @@ export class FractalMeshEngine {
   private onSlideChange: ((slideIndex: number) => void) | null = null;
   private onAnnotation: ((annotation: { type: string; x: number; y: number; data?: any }) => void) | null = null;
   private onCoHostUpdate: ((info: { peerId: string; isCoHost: boolean }) => void) | null = null;
-  private onWaitingRoomUpdate: ((waitingList: Array<{ peerId: string; displayName: string }>) => void) | null = null;
+  private onWaitingRoomUpdate: ((waitingList: Array<{ peerId: string; displayName: string; device: DeviceCapability | null }>) => void) | null = null;
   private onHandRaiseUpdate: ((info: { peerId: string; displayName: string; isRaised: boolean }) => void) | null = null;
 
   // Screen share state
@@ -183,6 +183,7 @@ export class FractalMeshEngine {
 
   // Waiting room state
   private waitingRoomEnabled = false;
+  private isInWaitingRoomState = false;
   private waitingList: Array<{ peerId: string; displayName: string; conn: DataConnection; joinPayload: any }> = [];
 
   // Attendance tracking
@@ -366,6 +367,9 @@ export class FractalMeshEngine {
       hostActive: true,
       failoverHostPeerId: null,
     };
+
+    // Enable waiting room by default
+    this.waitingRoomEnabled = true;
 
     this.startAllTimers();
     this.setupHostListeners();
@@ -808,7 +812,13 @@ export class FractalMeshEngine {
       case 'room-info':
         this.roomInfo = this.deserializeRoomInfo(msg.payload);
         if (this.myNode) this.myNode.status = 'connected';
-        if (this.onConnectionStatus) this.onConnectionStatus('connected');
+        if (msg.payload.isWaiting) {
+          // We're in the waiting room — don't fully connect
+          this.isInWaitingRoomState = true;
+          if (this.onConnectionStatus) this.onConnectionStatus('connected');
+        } else {
+          if (this.onConnectionStatus) this.onConnectionStatus('connected');
+        }
         this.saveToStorage();
         break;
       case 'parent-assigned': this.handleParentAssigned(msg); break;
@@ -912,9 +922,21 @@ export class FractalMeshEngine {
         senderId: this.myNode.peerId, senderName: this.myNode.displayName,
         roomId: this.roomInfo.roomId, timestamp: Date.now(),
       });
+      // ALSO send room-info so the viewer can display the waiting screen
+      // with room title and host name, but mark it as waiting state
+      const roomInfoCopy = { ...this.roomInfo! };
+      if (roomInfoCopy.clusters instanceof Map) {
+        roomInfoCopy.clusters = Object.fromEntries(roomInfoCopy.clusters) as any;
+      }
+      this.sendSignal(conn, {
+        type: 'room-info',
+        payload: { ...roomInfoCopy, isWaiting: true },
+        senderId: this.myNode.peerId, senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId, timestamp: Date.now(),
+      });
       // Notify UI
       if (this.onWaitingRoomUpdate) {
-        this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+        this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName, device: w.joinPayload?.device || null })));
       }
       return;
     }
@@ -2976,53 +2998,28 @@ export class FractalMeshEngine {
   setWaitingRoomEnabled(enabled: boolean): void {
     this.waitingRoomEnabled = enabled;
     if (this.onWaitingRoomUpdate) {
-      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName, device: w.joinPayload?.device || null })));
     }
   }
 
   admitFromWaitingRoom(peerId: string): void {
-    if (!this.myNode || !this.roomInfo || this.myNode.role !== 'host') return;
+    if (!this.myNode || !this.roomInfo) return;
 
     const waitingEntry = this.waitingList.find(w => w.peerId === peerId);
     if (!waitingEntry) return;
 
-    // Remove from waiting list
     this.waitingList = this.waitingList.filter(w => w.peerId !== peerId);
 
-    // Process the join now
     const conn = waitingEntry.conn;
     const joinPayload = waitingEntry.joinPayload;
 
     if (conn && conn.open) {
-      // Process the join using the stored payload
+      // Process the join — this adds the viewer as a child
       this.processJoinRoom(conn, joinPayload);
-    }
 
-    // Send admit signal to the peer
-    this.broadcastToChildren({
-      type: 'waiting-admit',
-      payload: { peerId },
-      senderId: this.myNode.peerId,
-      senderName: this.myNode.displayName,
-      roomId: this.roomInfo.roomId,
-      timestamp: Date.now(),
-    });
-
-    if (this.onWaitingRoomUpdate) {
-      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
-    }
-  }
-
-  denyFromWaitingRoom(peerId: string): void {
-    if (!this.myNode || !this.roomInfo || this.myNode.role !== 'host') return;
-
-    this.waitingList = this.waitingList.filter(w => w.peerId !== peerId);
-
-    // Send deny signal
-    const conn = this.childConnections.get(peerId);
-    if (conn) {
+      // Send admit signal DIRECTLY to the admitted viewer
       this.sendSignal(conn, {
-        type: 'waiting-deny',
+        type: 'waiting-admit',
         payload: { peerId },
         senderId: this.myNode.peerId,
         senderName: this.myNode.displayName,
@@ -3031,17 +3028,33 @@ export class FractalMeshEngine {
       });
     }
 
-    this.broadcastToChildren({
-      type: 'waiting-deny',
-      payload: { peerId },
-      senderId: this.myNode.peerId,
-      senderName: this.myNode.displayName,
-      roomId: this.roomInfo.roomId,
-      timestamp: Date.now(),
-    });
+    if (this.onWaitingRoomUpdate) {
+      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName, device: w.joinPayload?.device || null })));
+    }
+  }
+
+  denyFromWaitingRoom(peerId: string): void {
+    if (!this.myNode || !this.roomInfo) return;
+
+    const waitingEntry = this.waitingList.find(w => w.peerId === peerId);
+    this.waitingList = this.waitingList.filter(w => w.peerId !== peerId);
+
+    // Send deny signal directly to the denied viewer via their stored connection
+    if (waitingEntry?.conn && waitingEntry.conn.open) {
+      this.sendSignal(waitingEntry.conn, {
+        type: 'waiting-deny',
+        payload: { peerId },
+        senderId: this.myNode.peerId,
+        senderName: this.myNode.displayName,
+        roomId: this.roomInfo.roomId,
+        timestamp: Date.now(),
+      });
+      // Close the connection after denying
+      try { waitingEntry.conn.close(); } catch {}
+    }
 
     if (this.onWaitingRoomUpdate) {
-      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+      this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName, device: w.joinPayload?.device || null })));
     }
   }
 
@@ -3124,6 +3137,36 @@ export class FractalMeshEngine {
   }
 
   // ============ PUBLIC API: HAND RAISE ============
+
+  /**
+   * Host/co-host: lower a specific participant's raised hand.
+   * Sends a hand-lower signal targeting the participant, which propagates
+   * through the tree so all nodes update their hand-raise state.
+   */
+  lowerParticipantHand(peerId: string): void {
+    if (!this.myNode || !this.roomInfo) return;
+    const targetNode = this.nodes.get(peerId);
+    const displayName = targetNode?.displayName || peerId;
+    const msg: SignalMessage = {
+      type: 'hand-lower',
+      payload: { peerId, displayName },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    };
+    // Send directly to the participant if connected
+    const conn = this.childConnections.get(peerId);
+    if (conn) {
+      this.sendSignal(conn, msg);
+    }
+    // Broadcast through tree so all nodes update
+    this.broadcastToChildren(msg);
+    // Also invoke local callback
+    if (this.onHandRaiseUpdate) {
+      this.onHandRaiseUpdate({ peerId, displayName, isRaised: false });
+    }
+  }
 
   raiseHand(): void {
     if (!this.myNode || !this.roomInfo) return;
@@ -3225,10 +3268,11 @@ export class FractalMeshEngine {
   getNodes(): Map<string, TreeNode> { return this.nodes; }
   getClusters(): Map<string, Cluster> { return this.clusters; }
   getNetworkHistory(): NetworkHealthSnapshot[] { return this.networkHistory; }
-  getWaitingList(): Array<{ peerId: string; displayName: string }> {
-    return this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName }));
+  getWaitingList(): Array<{ peerId: string; displayName: string; device: DeviceCapability | null }> {
+    return this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName, device: w.joinPayload?.device || null }));
   }
   isWaitingRoomEnabled(): boolean { return this.waitingRoomEnabled; }
+  isInWaitingRoom(): boolean { return this.isInWaitingRoomState; }
 
   public getAttendanceLog() {
     return new Map(this.attendanceLog);
@@ -3392,7 +3436,7 @@ export class FractalMeshEngine {
   setOnSlideChange(cb: (slideIndex: number) => void) { this.onSlideChange = cb; }
   setOnAnnotation(cb: (annotation: { type: string; x: number; y: number; data?: any }) => void) { this.onAnnotation = cb; }
   setOnCoHostUpdate(cb: (info: { peerId: string; isCoHost: boolean }) => void) { this.onCoHostUpdate = cb; }
-  setOnWaitingRoomUpdate(cb: (waitingList: Array<{ peerId: string; displayName: string }>) => void) { this.onWaitingRoomUpdate = cb; }
+  setOnWaitingRoomUpdate(cb: (waitingList: Array<{ peerId: string; displayName: string; device: DeviceCapability | null }>) => void) { this.onWaitingRoomUpdate = cb; }
   setOnHandRaiseUpdate(cb: (info: { peerId: string; displayName: string; isRaised: boolean }) => void) { this.onHandRaiseUpdate = cb; }
 
   // ============ NEW SIGNAL HANDLERS ============
@@ -3445,7 +3489,7 @@ export class FractalMeshEngine {
       if (!this.waitingList.some(w => w.peerId === peerId)) {
         this.waitingList.push({ peerId, displayName, conn: null as any, joinPayload: msg.payload });
         if (this.onWaitingRoomUpdate) {
-          this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName })));
+          this.onWaitingRoomUpdate(this.waitingList.map(w => ({ peerId: w.peerId, displayName: w.displayName, device: w.joinPayload?.device || null })));
         }
       }
     } else {
@@ -3458,6 +3502,7 @@ export class FractalMeshEngine {
     const { peerId } = msg.payload;
     // If we're the admitted viewer, proceed with normal join
     if (this.myNode?.peerId === peerId) {
+      this.isInWaitingRoomState = false;
       // The host has admitted us — proceed with requesting stream from parent
       if (this.parentConnection) {
         this.requestStreamFromParent();

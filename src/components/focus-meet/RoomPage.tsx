@@ -17,10 +17,11 @@ import { PresenterView } from './PresenterView';
 import { ViewerExperience } from './ViewerExperience';
 import { WaitingRoom } from './WaitingRoom';
 import { WaitingScreen } from './WaitingScreen';
+import { HostControls } from './HostControls';
 import {
   ChatMessage, SpeakerRequest, TreeNode, NodeStatus, StreamHealth,
   NetworkHealthSnapshot, SharedFile, Reaction, ReactionType,
-  ScreenShareState, WaitingAttendee,
+  ScreenShareState, WaitingAttendee, DeviceCapability,
 } from '@/lib/types';
 import { useTheme } from '@/components/theme-provider';
 import { toast } from 'sonner';
@@ -33,6 +34,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isValidRoomId, isValidToken, normalizeRoomId, normalizeToken } from '@/lib/room-system';
+import { resumeAudioContext } from '@/lib/audio-context';
 
 const REACTION_EMOJI_MAP: Record<ReactionType, string> = {
   thumbsup: '👍',
@@ -49,7 +51,7 @@ export function RoomPage() {
     isHost, isInRoom, isChatOpen, isParticipantsOpen, isFilesOpen,
     myNode, connectionStatus, roomInfo, streamQuality,
     nodes, networkHealth, engine, screenShare, reactions,
-    setLocalStream, setIncomingStream, setMyNode, setNodes, setClusters,
+    setLocalStream, setIncomingStream, setPeerStream, setMyNode, setNodes, setClusters,
     addChatMessage, addSpeakerRequest, setConnectionStatus,
     setEngine, setInRoom, setIsHost, setRoomInfo,
     setAudioEnabled, setVideoEnabled, setStreamHealth, setStreamQuality,
@@ -63,6 +65,7 @@ export function RoomPage() {
     isRoomLocked, setIsRoomLocked,
     slideChangeCallback, annotationCallback, setSlideChangeCallback, setAnnotationCallback,
     waitingRoom, addWaitingAttendee, removeWaitingAttendee,
+    addHandRaise, removeHandRaise,
   } = useRoomStore();
 
   const workers = useWorkers();
@@ -144,6 +147,7 @@ export function RoomPage() {
       const tokenParam = params.get('token');
       const host = params.get('host') === 'true';
       const name = params.get('name') || 'Anonymous';
+      const waitingRoomParam = params.get('waitingRoom') !== 'false'; // default true
       setDisplayName(name);
 
       if (!roomIdParam) {
@@ -175,7 +179,10 @@ export function RoomPage() {
       setMyDevice(eng.getDevice());
 
       // Core callbacks
-      eng.setOnStreamUpdate((stream, _fromPeerId) => setIncomingStream(stream));
+      eng.setOnStreamUpdate((stream, fromPeerId) => {
+        setIncomingStream(stream);
+        setPeerStream(fromPeerId, stream);
+      });
       eng.setOnTreeUpdate((nodes) => {
         setNodes(nodes);
         const myId = eng.getMyNode()?.peerId;
@@ -189,7 +196,14 @@ export function RoomPage() {
       eng.setOnConnectionStatus((status: NodeStatus) => {
         setConnectionStatus(status);
         if (status === 'reconnecting') toast('Reconnecting...', { duration: 3000 });
-        else if (status === 'connected') toast.success('Connected!');
+        else if (status === 'connected') {
+          toast.success('Connected!');
+          // Detect waiting room admission: if viewer was waiting and now connected, admit them
+          if (!host && useRoomStore.getState().waitingForAdmission) {
+            setWaitingForAdmission(false);
+            toast.success("You've been admitted to the room!");
+          }
+        }
         else if (status === 'error') toast.error('Connection failed');
       });
       eng.setOnError((e: string) => {
@@ -223,16 +237,27 @@ export function RoomPage() {
       });
 
       // Waiting room update callback (host receives waiting list updates)
-      eng.setOnWaitingRoomUpdate((attendees: Array<{ peerId: string; displayName: string }>) => {
-        // Update the waiting room list - add new attendees, remove ones no longer waiting
+      eng.setOnWaitingRoomUpdate((attendees: Array<{ peerId: string; displayName: string; device: DeviceCapability | null }>) => {
+        // Update the waiting room list
         attendees.forEach(a => {
           if (!waitingRoom.some(w => w.peerId === a.peerId)) {
             addWaitingAttendee({
               peerId: a.peerId,
               displayName: a.displayName,
               joinedAt: Date.now(),
-              device: { deviceType: 'unknown', screenResolution: { width: 0, height: 0 }, cpuCores: 0, memoryGB: 0, isMobile: false, networkType: 'unknown', downlinkMbps: 0, rttMs: 0, saveData: false },
+              device: a.device || {
+                deviceType: 'unknown',
+                screenResolution: { width: 0, height: 0 },
+                cpuCores: 0, memoryGB: 0, isMobile: false,
+                networkType: 'unknown', downlinkMbps: 0, rttMs: 0, saveData: false,
+              },
             });
+          }
+        });
+        // Remove attendees who are no longer in the waiting list (they were admitted/denied)
+        waitingRoom.forEach(existing => {
+          if (!attendees.some(a => a.peerId === existing.peerId)) {
+            removeWaitingAttendee(existing.peerId);
           }
         });
       });
@@ -252,26 +277,51 @@ export function RoomPage() {
         }
       });
 
+      // Hand raise update callback — receive hand raise/lower from P2P network
+      eng.setOnHandRaiseUpdate((info: { peerId: string; displayName: string; isRaised: boolean }) => {
+        if (info.isRaised) {
+          addHandRaise({
+            peerId: info.peerId,
+            displayName: info.displayName,
+            isRaised: true,
+            raisedAt: Date.now(),
+          });
+        } else {
+          removeHandRaise(info.peerId);
+        }
+      });
+
       try {
         if (host) {
           // HOST FLOW: create room → start camera/mic → enter host view
           const info = await eng.createRoom(name, `Focus Meet - ${normalizedId}`);
           setRoomInfo(info); setIsHost(true);
+          // Sync waiting room setting from URL param to engine
+          eng.setWaitingRoomEnabled(waitingRoomParam);
+          setWaitingRoomEnabled(waitingRoomParam);
           const stream = await eng.startLocalStream(true, true);
           setLocalStream(stream); setAudioEnabled(true); setVideoEnabled(true);
           addChatMessage({ id: 'sys-1', senderId: 'system', senderName: 'System',
             content: `Room "${normalizedId}" created! Share the Room ID and Token with participants.`, timestamp: Date.now(), type: 'system' });
         } else {
-          // VIEWER FLOW: join room → waiting room (if enabled) → viewer experience
+          // VIEWER FLOW: join room → waiting room (if needed) → viewer experience
           const info = await eng.joinRoom(normalizedId, name);
           setRoomInfo(info); setIsHost(false);
-          addChatMessage({ id: 'sys-1', senderId: 'system', senderName: 'System',
-            content: `Connected to room ${normalizedId}!`, timestamp: Date.now(), type: 'system' });
 
-          // If waiting room is enabled, the viewer enters waiting state
-          // They will be admitted via the waiting-admit signal
-          if (eng.isWaitingRoomEnabled()) {
+          // Check if we're in the waiting room (engine sets this from isWaiting flag in room-info)
+          if (eng.isInWaitingRoom()) {
             setWaitingForAdmission(true);
+            addChatMessage({
+              id: 'sys-waiting', senderId: 'system', senderName: 'System',
+              content: 'You are in the waiting room. The host will admit you shortly.',
+              timestamp: Date.now(), type: 'system',
+            });
+          } else {
+            addChatMessage({
+              id: 'sys-1', senderId: 'system', senderName: 'System',
+              content: `Connected to room ${normalizedId}!`,
+              timestamp: Date.now(), type: 'system',
+            });
           }
         }
         setInRoom(true);
@@ -283,36 +333,6 @@ export function RoomPage() {
     init();
     return () => { if (engineRef.current) { engineRef.current.destroy(); engineRef.current = null; } };
   }, []);
-
-  // Listen for waiting-admit signal (viewer gets admitted from waiting room)
-  useEffect(() => {
-    if (!engine || isHost) return;
-
-    const handleWaitingAdmit = () => {
-      setWaitingForAdmission(false);
-      toast.success('You\'ve been admitted to the room!');
-    };
-
-    // The engine handles the signal internally and calls callbacks
-    // We need to listen for the connection status change that indicates admission
-    // The engine's handleWaitingAdmit sets connection status to 'connected'
-    const originalOnConnectionStatus = engine.onConnectionStatus;
-    engine.setOnConnectionStatus((status: NodeStatus) => {
-      if (originalOnConnectionStatus) originalOnConnectionStatus(status);
-      setConnectionStatus(status);
-      if (status === 'connected' && waitingForAdmission) {
-        setWaitingForAdmission(false);
-        toast.success('You\'ve been admitted to the room!');
-      }
-    });
-
-    return () => {
-      // Restore original callback on cleanup
-      if (originalOnConnectionStatus) {
-        engine.setOnConnectionStatus(originalOnConnectionStatus);
-      }
-    };
-  }, [engine, isHost, waitingForAdmission]);
 
   // Hash change handler
   useEffect(() => {
@@ -380,7 +400,7 @@ export function RoomPage() {
   // ═══════════════════════════════════════════════════════
   if (isHost) {
     return (
-      <div className="h-screen w-screen bg-zinc-950 flex flex-col overflow-hidden relative">
+      <div onClick={() => resumeAudioContext()} className="h-screen w-screen bg-zinc-950 flex flex-col overflow-hidden relative">
         {/* Status banners */}
         {connectionStatus === 'reconnecting' && (
           <div className="bg-amber-600 text-white text-center py-1.5 text-xs font-medium flex items-center justify-center gap-2 animate-pulse z-50">
@@ -472,6 +492,9 @@ export function RoomPage() {
             )}
 
             <span className="text-zinc-700 text-xs hidden sm:inline">|</span>
+
+            {/* Host Controls dropdown */}
+            <HostControls />
 
             {/* Copy invite */}
             <Button
@@ -606,7 +629,7 @@ export function RoomPage() {
   // RENDER: VIEWER LAYOUT
   // ═══════════════════════════════════════════════════════
   return (
-    <div className="h-screen w-screen bg-zinc-950 flex flex-col overflow-hidden relative">
+    <div onClick={() => resumeAudioContext()} className="h-screen w-screen bg-zinc-950 flex flex-col overflow-hidden relative">
       {/* Status banners */}
       {connectionStatus === 'reconnecting' && (
         <div className="bg-amber-600 text-white text-center py-1.5 text-xs font-medium flex items-center justify-center gap-2 animate-pulse z-50">

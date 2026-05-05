@@ -114,10 +114,31 @@ export class BenchmarkEngine {
 
   // ============ RUN FULL BENCHMARK ============
 
+  private _cancelled = false;
+
+  /** Cancel a running benchmark — causes runFullBenchmark to reject */
+  cancel(): void {
+    this._cancelled = true;
+  }
+
+  /** Yield to the browser main thread so the UI can update */
+  private yieldToMain(): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, 0));
+  }
+
+  /** Check cancellation and throw if cancelled */
+  private checkCancelled(): void {
+    if (this._cancelled) {
+      this._cancelled = false;
+      throw new Error('Benchmark cancelled');
+    }
+  }
+
   async runFullBenchmark(
     targetUsers: number = 700,
     onProgress?: (phase: string, progress: number) => void
   ): Promise<BenchmarkResult> {
+    this._cancelled = false;
     this.startTime = Date.now();
     this.reset();
 
@@ -126,11 +147,18 @@ export class BenchmarkEngine {
     const halfTarget = Math.floor(targetUsers * 0.5);
     for (let i = 0; i < halfTarget; i++) {
       this.simulateJoin(this.randomDevice());
+      // Yield every 100 iterations to keep UI responsive
+      if (i % 100 === 0) {
+        await this.yieldToMain();
+        this.checkCancelled();
+      }
     }
     this.recordPhase('Bulk Join (0→50%)');
 
     // Phase 2: Gradual join with some churn (50%→75%)
     if (onProgress) onProgress('Phase 2: Gradual + Churn', 0.25);
+    await this.yieldToMain();
+    this.checkCancelled();
     const quarterTarget = Math.floor(targetUsers * 0.25);
     for (let i = 0; i < quarterTarget; i++) {
       this.simulateJoin(this.randomDevice());
@@ -138,11 +166,17 @@ export class BenchmarkEngine {
       if (Math.random() < 0.1 && this.nodes.size > 10) {
         this.simulateLeave(this.randomActiveNode());
       }
+      if (i % 50 === 0) {
+        await this.yieldToMain();
+        this.checkCancelled();
+      }
     }
     this.recordPhase('Gradual + Churn (50%→75%)');
 
     // Phase 3: High churn phase (75%→100%)
     if (onProgress) onProgress('Phase 3: High Churn', 0.5);
+    await this.yieldToMain();
+    this.checkCancelled();
     const remaining = targetUsers - this.nodes.size;
     for (let i = 0; i < Math.max(0, remaining); i++) {
       this.simulateJoin(this.randomDevice());
@@ -150,11 +184,17 @@ export class BenchmarkEngine {
       if (Math.random() < 0.2 && this.nodes.size > 20) {
         this.simulateLeave(this.randomActiveNode());
       }
+      if (i % 50 === 0) {
+        await this.yieldToMain();
+        this.checkCancelled();
+      }
     }
     this.recordPhase('High Churn (75%→100%)');
 
     // Phase 4: Sustained load with active churn for 5 minutes (simulated)
     if (onProgress) onProgress('Phase 4: Sustained Load', 0.7);
+    await this.yieldToMain();
+    this.checkCancelled();
     for (let tick = 0; tick < 300; tick++) { // 300 ticks = ~5 min simulated
       this.tickCounter++;
       // ~5% of users leave and rejoin each tick
@@ -181,19 +221,35 @@ export class BenchmarkEngine {
       if (tick % 60 === 0 && tick > 0) {
         this.recordPhase(`Sustained Load ${tick / 60}min`);
       }
+
+      // Yield every 10 ticks to keep UI responsive
+      if (tick % 10 === 0) {
+        await this.yieldToMain();
+        this.checkCancelled();
+        // Report incremental progress within sustained load phase
+        if (onProgress) onProgress('Phase 4: Sustained Load', 0.7 + (tick / 300) * 0.15);
+      }
     }
     this.recordPhase('Sustained Load (5 min)');
 
     // Phase 5: Stress test — burst joins
     if (onProgress) onProgress('Phase 5: Burst Stress', 0.85);
+    await this.yieldToMain();
+    this.checkCancelled();
     const burstSize = Math.floor(targetUsers * 0.2);
     for (let i = 0; i < burstSize; i++) {
       this.simulateJoin(this.randomDevice());
+      if (i % 50 === 0) {
+        await this.yieldToMain();
+        this.checkCancelled();
+      }
     }
     this.recordPhase('Burst Stress (+20%)');
 
     // Phase 6: Cascade test — multiple relay failures
     if (onProgress) onProgress('Phase 6: Cascade Test', 0.9);
+    await this.yieldToMain();
+    this.checkCancelled();
     const relayNodes = Array.from(this.nodes.values()).filter(n => n.canRelay && n.clusterRole === 'relay');
     const relaysToKill = Math.min(5, relayNodes.length);
     for (let i = 0; i < relaysToKill; i++) {
@@ -205,6 +261,8 @@ export class BenchmarkEngine {
 
     // Phase 7: Recovery observation
     if (onProgress) onProgress('Phase 7: Recovery', 0.95);
+    await this.yieldToMain();
+    this.checkCancelled();
     this.checkStreamHealth();
     this.assignQuality();
     this.recordPhase('Recovery Observation');

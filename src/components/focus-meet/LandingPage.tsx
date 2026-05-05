@@ -11,6 +11,7 @@ import {
   Image, Heart, Target, Lightbulb, Flame, Award,
   Presentation, HeadphonesIcon, Signal,
   Hexagon, Star, MessageSquare, ThumbsUp,
+  Link2, ExternalLink, Key, ShieldCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,6 +20,7 @@ import { useTheme } from '@/components/theme-provider';
 import { BenchmarkEngine } from '@/lib/benchmark';
 import { BenchmarkResult } from '@/lib/types';
 import { motion, AnimatePresence } from 'framer-motion';
+import { generateRoomId, generateAccessToken } from '@/lib/room-system';
 
 // The event room ID — hardcoded so users don't need to type it
 const EVENT_ROOM_ID = 'FM-A3K7';
@@ -220,12 +222,318 @@ function PointsBadge({ icon, label, points }: { icon: React.ReactNode; label: st
   );
 }
 
+// ============ HOST ROOM MODAL ============
+
+function HostRoomModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [hostName, setHostName] = useState('');
+  const [webinarTitle, setWebinarTitle] = useState('');
+  const [webinarDesc, setWebinarDesc] = useState('');
+  const [waitingRoom, setWaitingRoom] = useState(true);
+  const [hostError, setHostError] = useState('');
+
+  // After creation
+  const [createdRoom, setCreatedRoom] = useState<{ roomId: string; token: string } | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const handleCreate = () => {
+    setHostError('');
+    if (!hostName.trim()) {
+      setHostError('Enter your name as host');
+      return;
+    }
+    if (!webinarTitle.trim()) {
+      setHostError('Enter a webinar title');
+      return;
+    }
+    const roomId = generateRoomId();
+    const token = generateAccessToken();
+    setCreatedRoom({ roomId, token });
+  };
+
+  const getInviteLink = () => {
+    if (!createdRoom) return '';
+    return `${window.location.origin}/#${encodeURIComponent(`room=${createdRoom.roomId}&token=${createdRoom.token}`)}`;
+  };
+
+  const copyToClipboard = async (text: string, field: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    } catch {
+      // Fallback
+      const el = document.createElement('textarea');
+      el.value = text;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    }
+  };
+
+  const handleStartWebinar = () => {
+    if (!createdRoom) return;
+    window.location.hash = `room=${createdRoom.roomId}&token=${createdRoom.token}&host=true&name=${encodeURIComponent(hostName.trim())}&title=${encodeURIComponent(webinarTitle.trim())}&waitingRoom=${waitingRoom}`;
+  };
+
+  // Reset on close
+  const handleClose = () => {
+    setHostName('');
+    setWebinarTitle('');
+    setWebinarDesc('');
+    setWaitingRoom(true);
+    setHostError('');
+    setCreatedRoom(null);
+    setCopiedField(null);
+    onClose();
+  };
+
+  if (!open) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center"
+      >
+        {/* Backdrop */}
+        <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={handleClose} />
+
+        {/* Modal */}
+        <motion.div
+          initial={{ y: '100%', opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: '100%', opacity: 0 }}
+          transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+          className="relative z-10 w-full sm:max-w-md max-h-[92vh] sm:max-h-[85vh] overflow-y-auto bg-[#111111] sm:rounded-2xl rounded-t-2xl border border-white/10 shadow-2xl"
+        >
+          {/* Header */}
+          <div className="sticky top-0 bg-[#111111]/95 backdrop-blur-md z-10 px-5 pt-5 pb-3 border-b border-white/10">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center">
+                  <Presentation className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Host a Webinar</h3>
+                  <p className="text-[10px] text-zinc-500">Create and manage your own room</p>
+                </div>
+              </div>
+              <button onClick={handleClose} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
+                <X className="w-5 h-5 text-zinc-400" />
+              </button>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div className="p-5 space-y-4">
+            {!createdRoom ? (
+              <>
+                {/* Host Info */}
+                <div className="space-y-3">
+                  <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Host Details</p>
+                  <Input
+                    value={hostName}
+                    onChange={e => { setHostName(e.target.value); setHostError(''); }}
+                    placeholder="Your Name (Host)"
+                    className="bg-white/5 border-white/15 text-white placeholder:text-zinc-600 text-sm h-11"
+                  />
+                </div>
+
+                {/* Webinar Info */}
+                <div className="space-y-3">
+                  <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Webinar Details</p>
+                  <Input
+                    value={webinarTitle}
+                    onChange={e => { setWebinarTitle(e.target.value); setHostError(''); }}
+                    placeholder="Webinar Title"
+                    className="bg-white/5 border-white/15 text-white placeholder:text-zinc-600 text-sm h-11"
+                  />
+                  <textarea
+                    value={webinarDesc}
+                    onChange={e => setWebinarDesc(e.target.value)}
+                    placeholder="Description (optional)"
+                    rows={3}
+                    className="w-full bg-white/5 border border-white/15 rounded-md px-3 py-2 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-emerald-500 resize-none"
+                  />
+                </div>
+
+                {/* Waiting Room Toggle */}
+                <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="flex items-center gap-2.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    <div>
+                      <p className="text-xs font-semibold text-zinc-200">Waiting Room</p>
+                      <p className="text-[10px] text-zinc-500">Admit attendees before they join</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={waitingRoom}
+                    onClick={() => setWaitingRoom(!waitingRoom)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-[#111111] ${
+                      waitingRoom ? 'bg-emerald-600' : 'bg-zinc-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        waitingRoom ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Info Banner */}
+                <div className="bg-emerald-600/5 border border-emerald-500/20 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="w-4 h-4 text-emerald-400" />
+                    <p className="text-xs font-bold text-zinc-200">How Hosting Works</p>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    As a host, you&apos;ll share your camera and microphone. Your Room ID and Token will be generated automatically. Share these details with your attendees so they can join.
+                  </p>
+                </div>
+
+                {hostError && <p className="text-red-400 text-xs text-center">{hostError}</p>}
+
+                <Button
+                  onClick={handleCreate}
+                  disabled={!hostName.trim() || !webinarTitle.trim()}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-12"
+                >
+                  Create Room <ArrowRight className="w-4 h-4 ml-2" />
+                </Button>
+              </>
+            ) : (
+              <>
+                {/* Success / Share Details */}
+                <div className="flex flex-col items-center gap-3 py-2">
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+                    className="w-14 h-14 rounded-2xl bg-emerald-600/15 border border-emerald-500/30 flex items-center justify-center"
+                  >
+                    <Check className="w-7 h-7 text-emerald-400" />
+                  </motion.div>
+                  <div className="text-center">
+                    <p className="text-base font-bold text-white">Room Created!</p>
+                    <p className="text-[11px] text-zinc-500 mt-0.5">Share these details with your attendees</p>
+                  </div>
+                </div>
+
+                {/* Share Details Card */}
+                <div className="space-y-3">
+                  {/* Room ID */}
+                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                          <Key className="w-3.5 h-3.5 text-emerald-400" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Room ID</p>
+                          <p className="text-sm font-bold text-white font-mono truncate">{createdRoom.roomId}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard(createdRoom.roomId, 'roomId')}
+                        className="flex-shrink-0 p-2 rounded-lg hover:bg-white/10 transition-colors"
+                      >
+                        {copiedField === 'roomId'
+                          ? <Check className="w-4 h-4 text-emerald-400" />
+                          : <Copy className="w-4 h-4 text-zinc-400" />
+                        }
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Access Token */}
+                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                          <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Access Token</p>
+                          <p className="text-sm font-bold text-white font-mono truncate">{createdRoom.token}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard(createdRoom.token, 'token')}
+                        className="flex-shrink-0 p-2 rounded-lg hover:bg-white/10 transition-colors"
+                      >
+                        {copiedField === 'token'
+                          ? <Check className="w-4 h-4 text-emerald-400" />
+                          : <Copy className="w-4 h-4 text-zinc-400" />
+                        }
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Invite Link */}
+                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                          <Link2 className="w-3.5 h-3.5 text-emerald-400" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Direct Invite Link</p>
+                          <p className="text-[11px] text-emerald-300 truncate max-w-[200px] sm:max-w-[260px]">{getInviteLink()}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard(getInviteLink(), 'link')}
+                        className="flex-shrink-0 p-2 rounded-lg hover:bg-white/10 transition-colors"
+                      >
+                        {copiedField === 'link'
+                          ? <Check className="w-4 h-4 text-emerald-400" />
+                          : <Copy className="w-4 h-4 text-zinc-400" />
+                        }
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Waiting room status */}
+                {waitingRoom && (
+                  <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-amber-500/5 border border-amber-500/15">
+                    <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                    <p className="text-[11px] text-zinc-400">
+                      Waiting Room is <span className="text-amber-400 font-bold">ON</span> — attendees will need your approval before joining.
+                    </p>
+                  </div>
+                )}
+
+                <Button
+                  onClick={handleStartWebinar}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-12"
+                >
+                  Start Webinar <ExternalLink className="w-4 h-4 ml-2" />
+                </Button>
+              </>
+            )}
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 // ============ MAIN LANDING PAGE ============
 
 export function LandingPage() {
   const { theme, toggleTheme } = useTheme();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [joinModalOpen, setJoinModalOpen] = useState(false);
+  const [hostModalOpen, setHostModalOpen] = useState(false);
   const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, mins: 0, secs: 0 });
 
   // Countdown timer
@@ -269,6 +577,9 @@ export function LandingPage() {
               <Button onClick={() => setJoinModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold h-8 px-4">
                 Join Event
               </Button>
+              <Button onClick={() => setHostModalOpen(true)} variant="outline" className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 text-xs font-semibold h-8 px-4">
+                Host
+              </Button>
               <button onClick={toggleTheme} className="p-2 rounded-lg hover:bg-white/10 transition-colors">
                 {theme === 'dark' ? <Sun className="w-4 h-4 text-zinc-400" /> : <Moon className="w-4 h-4 text-zinc-600" />}
               </button>
@@ -277,6 +588,9 @@ export function LandingPage() {
             <div className="flex items-center gap-2 md:hidden">
               <Button onClick={() => setJoinModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-semibold h-7 px-3">
                 Join
+              </Button>
+              <Button onClick={() => setHostModalOpen(true)} variant="outline" className="border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 text-[10px] font-semibold h-7 px-3">
+                Host
               </Button>
               <button onClick={toggleTheme} className="p-2 rounded-lg hover:bg-white/10 transition-colors">
                 {theme === 'dark' ? <Sun className="w-4 h-4 text-zinc-400" /> : <Moon className="w-4 h-4 text-zinc-600" />}
@@ -295,6 +609,9 @@ export function LandingPage() {
                 <a href="#why" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Our Story</a>
                 <a href="#leaderboard" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Leaderboard</a>
                 <a href="#benchmark" onClick={() => setMobileMenuOpen(false)} className="px-3 py-2.5 rounded-lg text-sm text-zinc-300 hover:bg-white/10 font-medium">Benchmark</a>
+                <button onClick={() => { setMobileMenuOpen(false); setHostModalOpen(true); }} className="px-3 py-2.5 rounded-lg text-sm text-emerald-400 hover:bg-emerald-500/10 font-semibold text-left w-full">
+                  Host a Webinar
+                </button>
               </nav>
             </div>
           )}
@@ -354,6 +671,12 @@ export function LandingPage() {
                 className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm sm:text-base h-12 sm:h-14 px-8 sm:px-10 shadow-lg shadow-blue-600/25 text-base"
               >
                 Join the Meet <ArrowRight className="w-5 h-5 ml-2" />
+              </Button>
+              <Button
+                onClick={() => setHostModalOpen(true)}
+                className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm sm:text-base h-12 sm:h-14 px-8 sm:px-10 shadow-lg shadow-emerald-600/25"
+              >
+                Host a Webinar <Presentation className="w-5 h-5 ml-2" />
               </Button>
               <a href="#event">
                 <Button variant="outline" className="w-full sm:w-auto border-white/15 text-zinc-300 hover:bg-white/5 hover:text-white font-semibold h-12 sm:h-14 px-8 sm:px-10">
@@ -669,6 +992,9 @@ export function LandingPage() {
 
       {/* Join Room Modal */}
       <JoinRoomModal open={joinModalOpen} onClose={() => setJoinModalOpen(false)} />
+
+      {/* Host Room Modal */}
+      <HostRoomModal open={hostModalOpen} onClose={() => setHostModalOpen(false)} />
     </div>
   );
 }
