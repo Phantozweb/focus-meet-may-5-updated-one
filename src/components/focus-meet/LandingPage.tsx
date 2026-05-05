@@ -577,12 +577,6 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               >
                 Join the Meet <ArrowRight className="w-5 h-5 ml-2" />
               </Button>
-              <Button
-                onClick={() => setLoginModalOpen(true)}
-                className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm sm:text-base h-12 sm:h-14 px-8 sm:px-10 shadow-lg shadow-emerald-600/25"
-              >
-                Host a Webinar <Lock className="w-5 h-5 ml-2" />
-              </Button>
               <a href="#event">
                 <Button variant="outline" className="w-full sm:w-auto border-white/15 text-zinc-300 hover:bg-white/5 hover:text-white font-semibold h-12 sm:h-14 px-8 sm:px-10">
                   View Details
@@ -592,9 +586,9 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
 
             {/* Branding */}
             <div className="flex items-center justify-center gap-1.5 mt-8 sm:mt-10">
-              <span className="text-[10px] sm:text-xs text-zinc-600">by</span>
+              <span className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-500">by</span>
               <span className="text-xs sm:text-sm font-bold text-blue-500">Focus</span>
-              <span className="text-xs sm:text-sm font-bold text-zinc-900">links.in</span>
+              <span className="text-xs sm:text-sm font-bold text-zinc-900 dark:text-zinc-100">links.in</span>
             </div>
           </div>
         </div>
@@ -698,7 +692,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+          <div className="max-w-md mx-auto">
             {/* Event 1 — Beyond Ortho-K (current) */}
             <EventCard
               title="Beyond Ortho-K: Myopia Management with Contact Lenses"
@@ -708,26 +702,6 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               date="May 6, 2026"
               time="7:00 PM IST"
               isLive
-            />
-
-            {/* Event 2 — Placeholder */}
-            <EventCard
-              title="Pediatric Vision Screening: Early Detection Strategies"
-              speaker="Dr. Priya Sharma"
-              speakerRole="Pediatric Optometrist, AIIMS"
-              speakerInitials="PS"
-              date="May 20, 2026"
-              time="6:30 PM IST"
-            />
-
-            {/* Event 3 — Placeholder */}
-            <EventCard
-              title="Digital Eye Strain: Managing Screen-Related Vision Issues"
-              speaker="Dr. Arjun Mehta"
-              speakerRole="Clinical Director, EyeCare Plus"
-              speakerInitials="AM"
-              date="June 3, 2026"
-              time="7:00 PM IST"
             />
           </div>
         </div>
@@ -836,7 +810,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               </div>
               <span className="text-[10px] text-zinc-600 ml-1">by</span>
               <span className="text-xs font-bold text-blue-500">Focus</span>
-              <span className="text-xs font-bold text-zinc-900">links.in</span>
+              <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">links.in</span>
             </div>
             <div className="flex items-center gap-4 sm:gap-6">
               <a href="#hero" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Home</a>
@@ -849,7 +823,7 @@ export function LandingPage({ showLoginOnMount = false }: { showLoginOnMount?: b
               <a href="#" className="text-[11px] text-zinc-500 hover:text-white transition-colors">Terms</a>
             </div>
             <p className="text-[10px] text-zinc-700">
-              &copy; 2026 Focuslinks.in — All rights reserved
+              &copy; 2026 <span className="text-zinc-900 dark:text-zinc-300">Focuslinks.in</span> — All rights reserved
             </p>
           </div>
         </div>
