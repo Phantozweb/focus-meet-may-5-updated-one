@@ -70,12 +70,17 @@ export function SlideUpload() {
     }
 
     if (newSlides.length > 0) {
-      setSlides([...slides, ...newSlides]);
+      const updatedSlides = [...slides, ...newSlides];
+      setSlides(updatedSlides);
       if (newSlides.length > 1) {
         toast.success(`Added ${newSlides.length} slides`);
       }
+      // Sync slides to viewers if currently presenting
+      if (isPresenting && engine) {
+        engine.broadcastSlidesSync(updatedSlides, true);
+      }
     }
-  }, [slides, setSlides]);
+  }, [slides, setSlides, isPresenting, engine]);
 
   const handleRemoveSlide = useCallback((index: number) => {
     const newSlides = [...slides];
@@ -101,6 +106,8 @@ export function SlideUpload() {
     setIsPresenting(newPresenting);
     if (newPresenting && engine) {
       engine.broadcastSlideChange(0);
+      // Also sync slides to all viewers
+      engine.broadcastSlidesSync(slides, true);
     }
     toast.success(newPresenting ? 'Presentation started' : 'Presentation stopped');
   }, [isPresenting, slides, setIsPresenting, engine]);

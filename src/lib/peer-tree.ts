@@ -180,6 +180,7 @@ export class FractalMeshEngine {
   private onCoHostUpdate: ((info: { peerId: string; isCoHost: boolean }) => void) | null = null;
   private onWaitingRoomUpdate: ((waitingList: Array<{ peerId: string; displayName: string; device: DeviceCapability | null }>) => void) | null = null;
   private onHandRaiseUpdate: ((info: { peerId: string; displayName: string; isRaised: boolean }) => void) | null = null;
+  private onSlidesSync: ((slides: string[], isPresenting: boolean) => void) | null = null;
 
   // Screen share state
   private screenShareStream: MediaStream | null = null;
@@ -1059,6 +1060,7 @@ export class FractalMeshEngine {
       case 'backup-parent-assign': this.handleBackupParentAssign(msg); break;
       case 'slide-change': this.handleSlideChange(msg); break;
       case 'slide-broadcast': this.handleSlideChange(msg); break;
+      case 'slides-sync': this.handleSlidesSync(msg); break;
       case 'annotation-update': this.handleAnnotationUpdate(msg); break;
       case 'co-host-assign': this.handleCoHostAssign(msg); break;
       case 'co-host-revoke': this.handleCoHostRevoke(msg); break;
@@ -2103,6 +2105,11 @@ export class FractalMeshEngine {
       senderId: this.myNode.peerId, senderName: this.myNode.displayName,
       roomId: this.roomInfo?.roomId || '', timestamp: Date.now(),
     });
+  }
+
+  /** Request the media stream from parent — used by viewers to retry getting video */
+  requestStream(): void {
+    this.requestStreamFromParent();
   }
 
   sendChatMessage(content: string) {
@@ -3414,6 +3421,21 @@ export class FractalMeshEngine {
     this.broadcastToChildren(msg);
   }
 
+  broadcastSlidesSync(slides: string[], isPresenting: boolean): void {
+    if (!this.myNode || !this.roomInfo) return;
+    if (this.myNode.role !== 'host' && this.myNode.role !== 'co-host') return;
+
+    const msg: SignalMessage = {
+      type: 'slides-sync',
+      payload: { slides, isPresenting },
+      senderId: this.myNode.peerId,
+      senderName: this.myNode.displayName,
+      roomId: this.roomInfo.roomId,
+      timestamp: Date.now(),
+    };
+    this.broadcastToChildren(msg);
+  }
+
   broadcastAnnotation(annotation: { type: string; x: number; y: number; data?: any }): void {
     if (!this.myNode || !this.roomInfo) return;
     if (this.myNode.role !== 'host' && this.myNode.role !== 'co-host') return;
@@ -3987,6 +4009,7 @@ export class FractalMeshEngine {
   setOnCoHostUpdate(cb: (info: { peerId: string; isCoHost: boolean }) => void) { this.onCoHostUpdate = cb; }
   setOnWaitingRoomUpdate(cb: (waitingList: Array<{ peerId: string; displayName: string; device: DeviceCapability | null }>) => void) { this.onWaitingRoomUpdate = cb; }
   setOnHandRaiseUpdate(cb: (info: { peerId: string; displayName: string; isRaised: boolean }) => void) { this.onHandRaiseUpdate = cb; }
+  setOnSlidesSync(cb: (slides: string[], isPresenting: boolean) => void) { this.onSlidesSync = cb; }
 
   // ============ NEW SIGNAL HANDLERS ============
 
@@ -4131,6 +4154,13 @@ export class FractalMeshEngine {
   private handleSlideChange(msg: SignalMessage) {
     const { slideIndex } = msg.payload;
     if (this.onSlideChange) this.onSlideChange(slideIndex);
+    // Forward to children through tree
+    this.broadcastToChildren(msg);
+  }
+
+  private handleSlidesSync(msg: SignalMessage) {
+    const { slides, isPresenting } = msg.payload;
+    if (this.onSlidesSync) this.onSlidesSync(slides, isPresenting);
     // Forward to children through tree
     this.broadcastToChildren(msg);
   }

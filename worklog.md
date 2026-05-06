@@ -41,3 +41,28 @@ Stage Summary:
 - Mobile chat now shows properly in both host and viewer drawers
 - Reaction emoji now works: popup is visible (not clipped), single add (not double), proper fixed positioning
 - Code pushed to GitHub at Phantozweb/focus-meet-may-5-updated-one
+
+---
+Task ID: 1
+Agent: main
+Task: Fix PPTX slides not visible to viewers and video not showing for first joiners
+
+Work Log:
+- Read all 4 key files: peer-tree.ts, RoomPage.tsx, SlideUpload.tsx, ViewerExperience.tsx
+- Added `onSlidesSync` callback property and `setOnSlidesSync` setter to FractalMeshEngine
+- Added `broadcastSlidesSync()` public method to FractalMeshEngine that sends slides-sync signal to all children
+- Added `slides-sync` case in handleSignal switch statement
+- Added `handleSlidesSync()` handler method that invokes the callback and forwards to children
+- Added public `requestStream()` method wrapping `requestStreamFromParent()` for viewer retry
+- In RoomPage.tsx: hooked up `eng.setOnSlidesSync()` callback to update store slides and isPresenting
+- In RoomPage.tsx: added useEffect to broadcast slides when host's presenting state or slides change
+- In RoomPage.tsx: added useEffect to re-sync slides when new participants join (nodes.size change)
+- In SlideUpload.tsx: added `engine.broadcastSlidesSync(slides, true)` in handleTogglePresentation
+- In SlideUpload.tsx: added slides sync in handleFileUpload when isPresenting is true
+- In ViewerExperience.tsx: added retry mechanism that calls engine.requestStream() after 3s if no stream
+- Ran lint — no errors
+
+Stage Summary:
+- Issue 1 (Slides not visible): Fixed by adding slides-sync signal type that broadcasts slide image data URLs through the P2P tree. When host starts presenting or adds slides, they're synced to all viewers. Late joiners get slides re-synced when they connect.
+- Issue 2 (Video not showing): Fixed by adding a 3-second retry mechanism in ViewerExperience that calls engine.requestStream() if the incoming stream hasn't arrived yet.
+- All changes pass lint with zero errors.

@@ -273,6 +273,12 @@ export function RoomPage() {
         if (slideChangeCallback) slideChangeCallback(slideIndex);
       });
 
+      // Slides sync callback — receive slide images from host via P2P
+      eng.setOnSlidesSync((syncedSlides: string[], syncIsPresenting: boolean) => {
+        setSlides(syncedSlides);
+        if (syncIsPresenting) setIsPresenting(true);
+      });
+
       // Annotation callback
       eng.setOnAnnotation((annotation: { type: string; x: number; y: number; data?: any }) => {
         if (annotationCallback) annotationCallback(annotation);
@@ -416,6 +422,24 @@ export function RoomPage() {
       engine.setWorkerProxy(workers.workerProxy);
     }
   }, [engine, workers.workerProxy]);
+
+  // When host's slides or presenting state changes, sync to all viewers
+  useEffect(() => {
+    if (isHost && isPresenting && slides.length > 0 && engine) {
+      engine.broadcastSlidesSync(slides, isPresenting);
+    }
+  }, [isHost, isPresenting, slides.length, engine]);
+
+  // Re-sync slides when new participants join (detected by nodes size change)
+  useEffect(() => {
+    if (isHost && isPresenting && slides.length > 0 && engine) {
+      // Small delay to let the data channel establish
+      const timer = setTimeout(() => {
+        engine.broadcastSlidesSync(slides, isPresenting);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [isHost, isPresenting, slides.length, nodes.size, engine]);
 
   const fmt = (ms: number) => {
     const s = Math.floor(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60);

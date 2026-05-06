@@ -869,91 +869,108 @@ async function renderPPTXAsSlides(file: File): Promise<string[]> {
   const result: string[] = [];
 
   try {
-    const arrayBuffer = await file.arrayBuffer();
-    const uint8 = new Uint8Array(arrayBuffer);
+    // Use JSZip for proper PPTX parsing (consistent with SlideUpload.tsx)
+    const JSZip = (await import('jszip')).default;
+    const zip = await JSZip.loadAsync(file);
 
-    if (uint8[0] !== 0x50 || uint8[1] !== 0x4b) {
-      return result;
+    // Strategy 1: Extract embedded images from ppt/media/
+    // PPTX stores slide images in ppt/media/ folder
+    const mediaFiles: string[] = [];
+    zip.forEach((relativePath, zipEntry) => {
+      if (relativePath.startsWith('ppt/media/') && !zipEntry.dir) {
+        mediaFiles.push(relativePath);
+      }
+    });
+
+    mediaFiles.sort();
+
+    for (const mediaPath of mediaFiles) {
+      const entry = zip.file(mediaPath);
+      if (!entry) continue;
+
+      const ext = mediaPath.split('.').pop()?.toLowerCase();
+      if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'webp'].includes(ext || '')) {
+        try {
+          const blob = await entry.async('blob');
+          const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+            : ext === 'svg' ? 'image/svg+xml'
+            : ext === 'webp' ? 'image/webp'
+            : ext === 'gif' ? 'image/gif'
+            : ext === 'bmp' ? 'image/bmp'
+            : 'image/png';
+          const typedBlob = new Blob([blob], { type: mimeType });
+          const dataUrl = await blobToDataUrl(typedBlob);
+          result.push(dataUrl);
+        } catch (err) {
+          console.warn(`Failed to extract ${mediaPath}:`, err);
+        }
+      }
     }
 
-    const slideTexts = extractPPTXSlideTexts(arrayBuffer);
+    // If we got images from media, return them
+    if (result.length > 0) return result;
 
-    if (slideTexts.length === 0) {
-      return result;
-    }
+    // Strategy 2: Fallback — extract text from slide XML and render to canvas
+    const slideFiles: string[] = [];
+    zip.forEach((relativePath, zipEntry) => {
+      const match = relativePath.match(/^ppt\/slides\/slide(\d+)\.xml$/);
+      if (match && !zipEntry.dir) {
+        slideFiles.push(relativePath);
+      }
+    });
 
-    for (let i = 0; i < slideTexts.length; i++) {
-      const slideImage = renderTextToSlideCanvas(
-        slideTexts[i] || `Slide ${i + 1}`,
-        `Slide ${i + 1}`,
-        i + 1,
-        slideTexts.length
-      );
-      result.push(slideImage);
+    // Sort by slide number
+    slideFiles.sort((a, b) => {
+      const numA = parseInt(a.match(/slide(\d+)/)?.[1] || '0');
+      const numB = parseInt(b.match(/slide(\d+)/)?.[1] || '0');
+      return numA - numB;
+    });
+
+    for (let i = 0; i < slideFiles.length; i++) {
+      const entry = zip.file(slideFiles[i]);
+      if (!entry) continue;
+
+      try {
+        const xmlContent = await entry.async('text');
+        const texts = extractTextFromSlideXml(xmlContent);
+        const slideImage = renderTextToSlideCanvas(
+          texts.length > 0 ? texts.join('\n') : `Slide ${i + 1}`,
+          `Slide ${i + 1}`,
+          i + 1,
+          slideFiles.length
+        );
+        result.push(slideImage);
+      } catch (err) {
+        console.warn(`Failed to render ${slideFiles[i]}:`, err);
+      }
     }
-  } catch {
-    // PPTX parsing failed
+  } catch (err) {
+    console.error('PPTX extraction error:', err);
   }
 
   return result;
 }
 
-function extractPPTXSlideTexts(arrayBuffer: ArrayBuffer): string[] {
-  const slidesMap: Map<number, string> = new Map();
-  const data = new Uint8Array(arrayBuffer);
-  const decoder = new TextDecoder('utf-8', { fatal: false });
-  const text = decoder.decode(data);
-
-  const textMatches: string[] = [];
-  const regex = /<a:t>([^<]*)<\/a:t>/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    if (match[1].trim()) {
-      textMatches.push(match[1].trim());
-    }
+/** Extract text from slide XML using JSZip-parsed content */
+function extractTextFromSlideXml(xml: string): string[] {
+  const texts: string[] = [];
+  const regex = /<a:t[^>]*>([^<]+)<\/a:t>/g;
+  let match;
+  while ((match = regex.exec(xml)) !== null) {
+    const text = match[1].trim();
+    if (text) texts.push(text);
   }
+  return texts;
+}
 
-  const slideBoundaryRegex = /ppt\/slides\/slide(\d+)\.xml/g;
-  const slidePositions: { index: number; slideNum: number }[] = [];
-  while ((match = slideBoundaryRegex.exec(text)) !== null) {
-    slidePositions.push({
-      index: match.index,
-      slideNum: parseInt(match[1], 10),
-    });
-  }
-
-  if (slidePositions.length > 0) {
-    for (const pos of slidePositions) {
-      const nextPos = slidePositions.find(
-        (s) => s.slideNum === pos.slideNum + 1
-      );
-      const startPos = pos.index;
-      const endPos = nextPos ? nextPos.index : Math.min(startPos + 5000, text.length);
-      const slideContent = text.substring(startPos, endPos);
-      const slideTexts: string[] = [];
-      const innerRegex = /<a:t>([^<]*)<\/a:t>/g;
-      let innerMatch: RegExpExecArray | null;
-      while ((innerMatch = innerRegex.exec(slideContent)) !== null) {
-        if (innerMatch[1].trim()) {
-          slideTexts.push(innerMatch[1].trim());
-        }
-      }
-      slidesMap.set(pos.slideNum, slideTexts.join('\n'));
-    }
-
-    const maxSlide = Math.max(...Array.from(slidesMap.keys()));
-    const result: string[] = [];
-    for (let i = 1; i <= maxSlide; i++) {
-      result.push(slidesMap.get(i) || '');
-    }
-    return result;
-  }
-
-  if (textMatches.length > 0) {
-    return [textMatches.join('\n')];
-  }
-
-  return [];
+/** Convert a Blob to a data URL */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
 function renderTextToSlideCanvas(

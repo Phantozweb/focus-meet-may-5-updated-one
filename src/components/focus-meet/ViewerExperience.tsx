@@ -164,6 +164,19 @@ export function ViewerExperience() {
     }
   }, [incomingStream]);
 
+  // ── Retry getting video stream if not available after connection ──
+  useEffect(() => {
+    if (!incomingStream && engine) {
+      const timer = setTimeout(() => {
+        // Request stream retry from engine
+        if (engine.requestStream) {
+          engine.requestStream();
+        }
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [incomingStream, engine]);
+
   // ── Local slide index for manual navigation ──
   const [localSlideIndex, setLocalSlideIndex] = useState(0);
 
